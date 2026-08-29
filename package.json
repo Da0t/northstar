@@ -2,7 +2,7 @@
   "name": "northstar",
   "version": "0.1.0",
   "private": true,
-  "description": "Northstar — a local Monte Carlo portfolio forecast",
+  "description": "Northstar — a local-first Monte Carlo goal-resilience planning lab",
   "type": "module",
   "packageManager": "pnpm@10.29.2",
   "engines": {

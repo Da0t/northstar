@@ -1,5 +1,16 @@
+import {
+  averageGoalShortfall,
+  ceilToCents,
+  floorToCents,
+  lowerTailMean,
+  requirementAtSuccessRate,
+  supportedValueAtSuccessRate,
+  wilsonInterval,
+  type ProbabilityInterval,
+} from "./planningMetrics";
+
 export const UI_SCENARIO_COUNT = 5_000;
-export const MODEL_VERSION = "northstar-monte-carlo/2.1.0";
+export const MODEL_VERSION = "northstar-monte-carlo/2.2.0";
 export const MAX_SCENARIO_COUNT = 10_000;
 export const MAX_MONTHLY_UPDATES = 6_000_000;
 export const MAX_SNAPSHOT_CELLS = 510_000;
@@ -8,7 +19,7 @@ export const MAX_UINT32 = 0xffff_ffff;
 const MAX_STARTING_BALANCE = 1_000_000_000_000;
 const MAX_MONTHLY_CONTRIBUTION = 100_000_000;
 const MAX_TARGET_ENDING_VALUE = 10_000_000_000_000;
-const MAX_MODELED_BALANCE = 1_000_000_000_000_000;
+const MAX_MODELED_BALANCE = Number.MAX_SAFE_INTEGER / 100;
 
 export interface PortfolioAssumptions {
   startingBalance: number;
@@ -19,6 +30,7 @@ export interface PortfolioAssumptions {
   annualInflation: number;
   annualFee: number;
   targetTodayValue: number;
+  targetSuccessBps: number;
 }
 
 export type AssumptionField = keyof PortfolioAssumptions;
@@ -51,6 +63,21 @@ export interface SimulationResult {
   seed: number;
   modelVersion: string;
   targetNominal: number;
+  successfulScenarios: number;
+  samplingInterval: ProbabilityInterval;
+  planning: PlanningInsights;
+}
+
+export interface PlanningInsights {
+  targetSuccessBps: number;
+  requiredMonthlyContribution: number | null;
+  requiredContributionExceedsModelLimit: boolean;
+  monthlyContributionGap: number | null;
+  supportedGoalToday: number;
+  averageGoalShortfall: number | null;
+  lowerTailAverage: number;
+  medianNetNominalMaxDrawdown: number;
+  p90NetNominalMaxDrawdown: number;
 }
 
 export interface SimulationOptions {
@@ -67,6 +94,7 @@ const ASSUMPTION_FIELDS: readonly AssumptionField[] = [
   "annualInflation",
   "annualFee",
   "targetTodayValue",
+  "targetSuccessBps",
 ];
 
 const DEFAULT_SEED = 0x4e4f5254;
@@ -185,6 +213,20 @@ export function validateAssumptions(input: PortfolioAssumptions): ValidationIssu
     }
   }
 
+  if (requireFinite("targetSuccessBps", "Planning threshold")) {
+    if (
+      !Number.isInteger(input.targetSuccessBps) ||
+      input.targetSuccessBps % 100 !== 0 ||
+      input.targetSuccessBps < 5_000 ||
+      input.targetSuccessBps > 9_900
+    ) {
+      issues.push({
+        field: "targetSuccessBps",
+        message: "Planning threshold must be a whole percentage from 50% through 99%.",
+      });
+    }
+  }
+
   if (requireFinite("years", "Time horizon")) {
     if (!Number.isInteger(input.years) || input.years < 1 || input.years > 50) {
       issues.push({
@@ -192,6 +234,26 @@ export function validateAssumptions(input: PortfolioAssumptions): ValidationIssu
         message: "Time horizon must be a whole number from 1 to 50 years.",
       });
     }
+  }
+
+  if (
+    Number.isFinite(input.targetTodayValue) &&
+    input.targetTodayValue >= 0 &&
+    Number.isFinite(input.annualInflation) &&
+    input.annualInflation >= 0 &&
+    input.annualInflation <= 0.2 &&
+    Number.isFinite(input.years) &&
+    Number.isInteger(input.years) &&
+    input.years >= 1 &&
+    input.years <= 50 &&
+    input.targetTodayValue * (1 + input.annualInflation) ** input.years >
+      MAX_MODELED_BALANCE
+  ) {
+    issues.push({
+      field: "targetTodayValue",
+      message:
+        "Goal and inflation exceed Northstar's cent-precision numerical safety boundary.",
+    });
   }
 
   return issues;
@@ -274,7 +336,16 @@ export function percentile(sortedValues: readonly number[], fraction: number): n
 function checkedBalance(value: number, context: string): number {
   if (!Number.isFinite(value) || value < 0 || value > MAX_MODELED_BALANCE) {
     throw new SimulationNumericalError(
-      `The ${context} left Northstar's nonnegative $1 quadrillion numerical safety boundary.`,
+      `The ${context} left Northstar's nonnegative cent-precision numerical safety boundary.`,
+    );
+  }
+  return value;
+}
+
+function checkedNonnegativeFinite(value: number, context: string): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new SimulationNumericalError(
+      `The ${context} left Northstar's finite nonnegative numerical boundary.`,
     );
   }
   return value;
@@ -363,20 +434,55 @@ export function runSimulation(
     input.targetTodayValue * inflationIndex(input, input.years),
     "inflation-adjusted goal",
   );
+  const finalInflationIndex = inflationIndex(input, input.years);
+  const finalRealBalances = new Array<number>(scenarioCount);
+  const requiredContributions = new Array<number>(scenarioCount);
+  const maximumDrawdowns = new Array<number>(scenarioCount);
+  let maxRerunnableMonthlyContribution = MAX_MONTHLY_CONTRIBUTION;
   let successes = 0;
 
   for (let scenario = 0; scenario < scenarioCount; scenario += 1) {
     let balance = input.startingBalance;
+    let startingBalanceComponent = input.startingBalance;
+    let contributionCoefficient = 0;
+    let growthIndex = 1;
+    let peakGrowthIndex = 1;
+    let maximumDrawdown = 0;
     const initialSnapshot = snapshots[0];
     if (initialSnapshot) {
       initialSnapshot[scenario] = balance;
     }
 
     for (let month = 1; month <= input.years * 12; month += 1) {
-      const factor = Math.exp(monthlyDrift + monthlyDiffusion * normal());
+      const factor =
+        Math.exp(monthlyDrift + monthlyDiffusion * normal()) * monthlyFeeFactor;
       balance = checkedBalance(
-        balance * factor * monthlyFeeFactor + input.monthlyContribution,
+        balance * factor + input.monthlyContribution,
         `balance in scenario ${scenario + 1}, month ${month}`,
+      );
+      startingBalanceComponent = checkedBalance(
+        startingBalanceComponent * factor,
+        `starting-balance component in scenario ${scenario + 1}, month ${month}`,
+      );
+      contributionCoefficient = checkedNonnegativeFinite(
+        contributionCoefficient * factor + 1,
+        `contribution coefficient in scenario ${scenario + 1}, month ${month}`,
+      );
+      maxRerunnableMonthlyContribution = Math.min(
+        maxRerunnableMonthlyContribution,
+        (MAX_MODELED_BALANCE - startingBalanceComponent) /
+          contributionCoefficient,
+      );
+      growthIndex *= factor;
+      if (!Number.isFinite(growthIndex) || growthIndex <= 0) {
+        throw new SimulationNumericalError(
+          `The growth index failed in scenario ${scenario + 1}, month ${month}.`,
+        );
+      }
+      peakGrowthIndex = Math.max(peakGrowthIndex, growthIndex);
+      maximumDrawdown = Math.max(
+        maximumDrawdown,
+        1 - growthIndex / peakGrowthIndex,
       );
 
       if (month % 12 === 0) {
@@ -386,6 +492,20 @@ export function runSimulation(
         }
       }
     }
+
+    const finalRealBalance = balance / finalInflationIndex;
+    finalRealBalances[scenario] = finalRealBalance;
+    const requiredContribution =
+      targetNominal <= startingBalanceComponent
+        ? 0
+        : (targetNominal - startingBalanceComponent) / contributionCoefficient;
+    if (!Number.isFinite(requiredContribution) || requiredContribution < 0) {
+      throw new SimulationNumericalError(
+        `The contribution solver failed in scenario ${scenario + 1}.`,
+      );
+    }
+    requiredContributions[scenario] = requiredContribution;
+    maximumDrawdowns[scenario] = maximumDrawdown;
 
     if (balance >= targetNominal) {
       successes += 1;
@@ -404,6 +524,30 @@ export function runSimulation(
     };
   });
 
+  finalRealBalances.sort((a, b) => a - b);
+  requiredContributions.sort((a, b) => a - b);
+  maximumDrawdowns.sort((a, b) => a - b);
+  const rawRequiredMonthlyContribution = requirementAtSuccessRate(
+    requiredContributions,
+    input.targetSuccessBps,
+  );
+  const roundedRequiredMonthlyContribution = ceilToCents(
+    rawRequiredMonthlyContribution,
+  );
+  const requiredContributionExceedsModelLimit =
+    roundedRequiredMonthlyContribution > MAX_MONTHLY_CONTRIBUTION ||
+    roundedRequiredMonthlyContribution >
+      floorToCents(maxRerunnableMonthlyContribution);
+  const requiredMonthlyContribution = requiredContributionExceedsModelLimit
+    ? null
+    : roundedRequiredMonthlyContribution;
+  const supportedGoalToday = floorToCents(
+    supportedValueAtSuccessRate(
+      finalRealBalances,
+      input.targetSuccessBps,
+    ),
+  );
+
   return {
     points,
     successProbability: successes / scenarioCount,
@@ -411,5 +555,26 @@ export function runSimulation(
     seed,
     modelVersion: MODEL_VERSION,
     targetNominal,
+    successfulScenarios: successes,
+    samplingInterval: wilsonInterval(successes, scenarioCount),
+    planning: {
+      targetSuccessBps: input.targetSuccessBps,
+      requiredMonthlyContribution,
+      requiredContributionExceedsModelLimit,
+      monthlyContributionGap:
+        requiredMonthlyContribution === null
+          ? null
+          : ceilToCents(
+              Math.max(0, requiredMonthlyContribution - input.monthlyContribution),
+            ),
+      supportedGoalToday,
+      averageGoalShortfall: averageGoalShortfall(
+        finalRealBalances,
+        input.targetTodayValue,
+      ),
+      lowerTailAverage: lowerTailMean(finalRealBalances, 0.1),
+      medianNetNominalMaxDrawdown: percentile(maximumDrawdowns, 0.5),
+      p90NetNominalMaxDrawdown: percentile(maximumDrawdowns, 0.9),
+    },
   };
 }

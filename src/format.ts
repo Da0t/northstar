@@ -4,6 +4,13 @@ const wholeDollarFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 0,
 });
 
+const exactDollarFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
 const compactDollarFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -23,6 +30,10 @@ const percentageInputFormatter = new Intl.NumberFormat("en-US", {
 
 export function formatCurrency(value: number): string {
   return wholeDollarFormatter.format(Number.isFinite(value) ? value : 0);
+}
+
+export function formatExactCurrency(value: number): string {
+  return exactDollarFormatter.format(Number.isFinite(value) ? value : 0);
 }
 
 export function formatCompactCurrency(value: number): string {

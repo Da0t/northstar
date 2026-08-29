@@ -24,6 +24,7 @@ const BASE: PortfolioAssumptions = {
   annualInflation: 0,
   annualFee: 0,
   targetTodayValue: 500_000,
+  targetSuccessBps: 8_000,
 };
 
 describe("assumptionsEqual", () => {
@@ -40,6 +41,7 @@ describe("assumptionsEqual", () => {
     ["annualInflation", 0.02],
     ["annualFee", 0.0025],
     ["targetTodayValue", 500_001],
+    ["targetSuccessBps", 8_500],
   ] as const)("detects a changed %s", (field, value) => {
     expect(assumptionsEqual(BASE, { ...BASE, [field]: value })).toBe(false);
   });
@@ -221,6 +223,24 @@ describe("fees and purchasing power", () => {
     expect(result.successProbability).toBe(0);
   });
 
+  it("uses the same nominal boundary for goal hits and real-dollar presentation", () => {
+    const assumptions: PortfolioAssumptions = {
+      ...BASE,
+      startingBalance: 100,
+      monthlyContribution: 0,
+      years: 1,
+      annualReturn: 0.02,
+      annualVolatility: 0,
+      annualInflation: 0.02,
+      targetTodayValue: 100,
+    };
+    const result = runSimulation(assumptions, { scenarios: 2, seed: 5 });
+
+    expect(result.points.at(-1)?.real.p50).toBeCloseTo(100, 12);
+    expect(result.targetNominal).toBeCloseTo(102, 12);
+    expect(result.successProbability).toBe(1);
+  });
+
   it("applies the annual fee as a proportional monthly asset charge", () => {
     const assumptions: PortfolioAssumptions = {
       ...BASE,
@@ -280,6 +300,160 @@ describe("fees and purchasing power", () => {
     const final = runSimulation(assumptions, { scenarios: 1, seed: 8 }).points.at(-1)!;
     expect(final.investedNominal).toBe(1_200);
     expect(final.investedReal).toBeCloseTo(expectedRealCapital, 10);
+  });
+});
+
+describe("goal-resilience planning insights", () => {
+  it("solves the fixed-path contribution and goal alternatives exactly", () => {
+    const assumptions: PortfolioAssumptions = {
+      ...BASE,
+      startingBalance: 0,
+      monthlyContribution: 50,
+      years: 1,
+      annualReturn: 0,
+      annualVolatility: 0,
+      targetTodayValue: 1_200,
+      targetSuccessBps: 8_000,
+    };
+    const result = runSimulation(assumptions, { scenarios: 10, seed: 12 });
+
+    expect(result).toMatchObject({
+      successfulScenarios: 0,
+      successProbability: 0,
+      planning: {
+        targetSuccessBps: 8_000,
+        requiredMonthlyContribution: 100,
+        monthlyContributionGap: 50,
+        supportedGoalToday: 600,
+        averageGoalShortfall: 600,
+        lowerTailAverage: 600,
+        medianNetNominalMaxDrawdown: 0,
+        p90NetNominalMaxDrawdown: 0,
+      },
+    });
+  });
+
+  it("keeps the modeled paths fixed when only the planning threshold changes", () => {
+    const options = { scenarios: 250, seed: 2_025 };
+    const eighty = runSimulation({ ...BASE, targetSuccessBps: 8_000 }, options);
+    const ninety = runSimulation({ ...BASE, targetSuccessBps: 9_000 }, options);
+
+    expect(ninety.points).toEqual(eighty.points);
+    expect(ninety.successfulScenarios).toBe(eighty.successfulScenarios);
+    expect(ninety.planning.requiredMonthlyContribution).toBeGreaterThanOrEqual(
+      eighty.planning.requiredMonthlyContribution ?? 0,
+    );
+  });
+
+  it("reaches the selected threshold when the solved contribution is rerun on the same paths", () => {
+    const baseline = runSimulation(BASE, { scenarios: 500, seed: 2_026 });
+    const required = baseline.planning.requiredMonthlyContribution;
+    expect(required).not.toBeNull();
+    if (required === null) throw new Error("Expected a bounded contribution solution.");
+
+    const adjusted = runSimulation(
+      { ...BASE, monthlyContribution: required },
+      { scenarios: 500, seed: 2_026 },
+    );
+    expect(adjusted.successProbability).toBeGreaterThanOrEqual(
+      BASE.targetSuccessBps / 10_000,
+    );
+
+    const insufficient = runSimulation(
+      { ...BASE, monthlyContribution: Math.max(0, required - 0.01) },
+      { scenarios: 500, seed: 2_026 },
+    );
+    expect(insufficient.successProbability).toBeLessThan(
+      BASE.targetSuccessBps / 10_000,
+    );
+  });
+
+  it("withholds a cent-rounded contribution that cannot rerun inside the balance boundary", () => {
+    const result = runSimulation(
+      {
+        ...BASE,
+        startingBalance: 0,
+        monthlyContribution: 0,
+        years: 50,
+        annualReturn: 1,
+        annualVolatility: 0,
+        annualInflation: 0,
+        annualFee: 0,
+        targetTodayValue: 500_000,
+      },
+      { scenarios: 1, seed: 11 },
+    );
+
+    expect(result.planning.requiredContributionExceedsModelLimit).toBe(true);
+    expect(result.planning.requiredMonthlyContribution).toBeNull();
+    expect(result.planning.monthlyContributionGap).toBeNull();
+  });
+
+  it("supports the solved real-dollar goal, but not one cent more, on the same paths", () => {
+    const options = { scenarios: 500, seed: 2_027 };
+    const baseline = runSimulation(BASE, options);
+    const supported = baseline.planning.supportedGoalToday;
+
+    const atGoal = runSimulation({ ...BASE, targetTodayValue: supported }, options);
+    const aboveGoal = runSimulation(
+      { ...BASE, targetTodayValue: supported + 0.01 },
+      options,
+    );
+
+    expect(atGoal.successProbability).toBeGreaterThanOrEqual(
+      BASE.targetSuccessBps / 10_000,
+    );
+    expect(aboveGoal.successProbability).toBeLessThan(
+      BASE.targetSuccessBps / 10_000,
+    );
+  });
+
+  it("measures maximum drawdown from the net modeled growth index", () => {
+    const result = runSimulation(
+      {
+        ...BASE,
+        startingBalance: 100,
+        monthlyContribution: 0,
+        years: 1,
+        annualReturn: -0.1,
+        annualVolatility: 0,
+      },
+      { scenarios: 2, seed: 9 },
+    );
+
+    expect(result.planning.medianNetNominalMaxDrawdown).toBeCloseTo(0.1, 12);
+    expect(result.planning.p90NetNominalMaxDrawdown).toBeCloseTo(0.1, 12);
+  });
+
+  it("defines drawdown on the nominal return index after fees, excluding inflation and contributions", () => {
+    const result = runSimulation(
+      {
+        ...BASE,
+        startingBalance: 0,
+        monthlyContribution: 1_000,
+        years: 1,
+        annualReturn: 0,
+        annualVolatility: 0,
+        annualFee: 0.1,
+        annualInflation: 0.2,
+        targetTodayValue: 0,
+      },
+      { scenarios: 2, seed: 10 },
+    );
+
+    expect(result.planning.medianNetNominalMaxDrawdown).toBeCloseTo(0.1, 12);
+    expect(result.planning.p90NetNominalMaxDrawdown).toBeCloseTo(0.1, 12);
+  });
+
+  it("reports the exact hit count and its conditional sampling interval", () => {
+    const result = runSimulation(
+      { ...BASE, targetTodayValue: 0 },
+      { scenarios: 100, seed: 13 },
+    );
+
+    expect(result.successfulScenarios).toBe(100);
+    expect(result.samplingInterval.lower).toBeCloseTo(0.9630065017930143, 14);
+    expect(result.samplingInterval.upper).toBe(1);
   });
 });
 
@@ -352,6 +526,7 @@ describe("validation", () => {
     ["annualVolatility", Number.POSITIVE_INFINITY],
     ["annualInflation", Number.NaN],
     ["annualFee", Number.POSITIVE_INFINITY],
+    ["targetSuccessBps", Number.NaN],
     ["years", Number.NaN],
   ] as const)("rejects a nonfinite %s", (field, value) => {
     const assumptions = { ...BASE, [field]: value };
@@ -371,6 +546,9 @@ describe("validation", () => {
     { field: "annualInflation", value: 0.201 },
     { field: "annualFee", value: -0.01 },
     { field: "annualFee", value: 0.101 },
+    { field: "targetSuccessBps", value: 4_999 },
+    { field: "targetSuccessBps", value: 9_901 },
+    { field: "targetSuccessBps", value: 8_055 },
     { field: "annualReturn", value: -1 },
     { field: "annualReturn", value: -2 },
     { field: "annualReturn", value: 1.01 },
@@ -395,6 +573,24 @@ describe("validation", () => {
   ] as const)("rejects an unsafe financial input boundary: $field", ({ field, value }) => {
     expect(validateAssumptions({ ...BASE, [field]: value })).toEqual(
       expect.arrayContaining([expect.objectContaining({ field })]),
+    );
+  });
+
+  it("rejects a goal whose inflation-adjusted value exceeds cent-safe precision", () => {
+    const assumptions = {
+      ...BASE,
+      years: 50,
+      annualInflation: 0.2,
+      targetTodayValue: 10_000_000_000_000,
+    };
+
+    expect(validateAssumptions(assumptions)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: "targetTodayValue" }),
+      ]),
+    );
+    expect(() => runSimulation(assumptions, { scenarios: 1 })).toThrow(
+      SimulationValidationError,
     );
   });
 });

@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FanChart, type DollarMode } from "./components/FanChart";
-import { formatCurrency, formatPercentageInput, formatProbability } from "./format";
+import {
+  formatCurrency,
+  formatExactCurrency,
+  formatPercentageInput,
+  formatProbability,
+} from "./format";
 import {
   UI_SCENARIO_COUNT,
   assumptionsEqual,
@@ -22,6 +27,7 @@ const DEFAULT_ASSUMPTIONS: PortfolioAssumptions = {
   annualInflation: 0.025,
   annualFee: 0.0025,
   targetTodayValue: 500_000,
+  targetSuccessBps: 8_000,
 };
 
 const PRESETS = [
@@ -43,6 +49,7 @@ interface FieldProps {
   min?: number;
   max?: number;
   step?: string;
+  help?: string;
   onChange: (field: AssumptionField, value: string) => void;
 }
 
@@ -56,6 +63,9 @@ function assumptionsToForm(assumptions: PortfolioAssumptions): FormState {
     annualInflation: formatPercentageInput(assumptions.annualInflation),
     annualFee: formatPercentageInput(assumptions.annualFee),
     targetTodayValue: String(assumptions.targetTodayValue),
+    targetSuccessBps: formatPercentageInput(
+      assumptions.targetSuccessBps / 10_000,
+    ),
   };
 }
 
@@ -73,6 +83,9 @@ function parseForm(form: FormState): { assumptions: PortfolioAssumptions; errors
     annualInflation: parseNumber(form.annualInflation) / 100,
     annualFee: parseNumber(form.annualFee) / 100,
     targetTodayValue: parseNumber(form.targetTodayValue),
+    targetSuccessBps: Number.isInteger(parseNumber(form.targetSuccessBps))
+      ? parseNumber(form.targetSuccessBps) * 100
+      : Number.NaN,
   };
   const errors: FormErrors = {};
 
@@ -101,14 +114,23 @@ function AssumptionField({
   min,
   max,
   step = "any",
+  help,
   onChange,
 }: FieldProps) {
   const errorId = `${field}-error`;
+  const helpId = `${field}-help`;
+  const describedBy = [help ? helpId : null, error ? errorId : null]
+    .filter(Boolean)
+    .join(" ") || undefined;
   return (
     <div className={`field ${error ? "field-invalid" : ""}`}>
       <label htmlFor={field}>{label}</label>
       <div className="input-shell">
-        {prefix ? <span className="input-adornment input-prefix">{prefix}</span> : null}
+        {prefix ? (
+          <span className="input-adornment input-prefix" aria-hidden="true">
+            {prefix}
+          </span>
+        ) : null}
         <input
           id={field}
           name={field}
@@ -120,11 +142,20 @@ function AssumptionField({
           value={value}
           className={prefix ? "has-prefix" : suffix ? "has-suffix" : undefined}
           aria-invalid={Boolean(error)}
-          aria-describedby={error ? errorId : undefined}
+          aria-describedby={describedBy}
           onChange={(event) => onChange(field, event.target.value)}
         />
-        {suffix ? <span className="input-adornment input-suffix">{suffix}</span> : null}
+        {suffix ? (
+          <span className="input-adornment input-suffix" aria-hidden="true">
+            {suffix}
+          </span>
+        ) : null}
       </div>
+      {help ? (
+        <span className="field-help" id={helpId}>
+          {help}
+        </span>
+      ) : null}
       {error ? (
         <span className="field-error" id={errorId} role="alert">
           {error}
@@ -154,6 +185,24 @@ function MetricCard({
   );
 }
 
+function DecisionCard({
+  label,
+  value,
+  note,
+}: {
+  label: string;
+  value: string;
+  note: string;
+}) {
+  return (
+    <div className="decision-card">
+      <p>{label}</p>
+      <strong>{value}</strong>
+      <span>{note}</span>
+    </div>
+  );
+}
+
 export default function App() {
   const [form, setForm] = useState<FormState>(() => assumptionsToForm(DEFAULT_ASSUMPTIONS));
   const [projection, setProjection] = useState<SimulationResult>(() =>
@@ -163,8 +212,8 @@ export default function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [dollarMode, setDollarMode] = useState<DollarMode>("real");
   const [statusMessage, setStatusMessage] = useState("Initial forecast ready.");
+  const [runError, setRunError] = useState<string | null>(null);
   const formRef = useRef(form);
-  const nextSeedRef = useRef(INITIAL_SEED + 1);
   const timerRef = useRef<number | undefined>(undefined);
   const parsed = useMemo(() => parseForm(form), [form]);
   const hasErrors = Object.keys(parsed.errors).length > 0;
@@ -175,6 +224,13 @@ export default function App() {
     dollarMode === "real" ? lastRun.targetTodayValue : projection.targetNominal;
   const displayedInvested =
     dollarMode === "real" ? finalPoint?.investedReal : finalPoint?.investedNominal;
+  const planningThreshold = projection.planning.targetSuccessBps / 10_000;
+  const isBoundaryHitSample =
+    projection.successfulScenarios === 0 ||
+    projection.successfulScenarios === projection.scenarioCount;
+  const samplingSummary = isBoundaryHitSample
+    ? `${projection.successfulScenarios.toLocaleString("en-US")} of ${projection.scenarioCount.toLocaleString("en-US")} paths shared the same goal outcome; interval not emphasized at this boundary`
+    : `${projection.successfulScenarios.toLocaleString("en-US")} of ${projection.scenarioCount.toLocaleString("en-US")} paths · ${formatProbability(projection.samplingInterval.confidenceLevel)} conditional sampling-error interval ${formatProbability(projection.samplingInterval.lower)}–${formatProbability(projection.samplingInterval.upper)}`;
 
   useEffect(
     () => () => {
@@ -186,6 +242,7 @@ export default function App() {
   );
 
   const updateForm = (nextForm: FormState, changedMessage: string, currentMessage: string) => {
+    setRunError(null);
     formRef.current = nextForm;
     setForm(nextForm);
     const next = parseForm(nextForm);
@@ -232,29 +289,38 @@ export default function App() {
       return;
     }
 
-    const seed = nextSeedRef.current >>> 0;
-    nextSeedRef.current = (nextSeedRef.current + 1) >>> 0;
     setIsRunning(true);
+    setRunError(null);
     setStatusMessage(`Running ${UI_SCENARIO_COUNT.toLocaleString("en-US")} local scenarios…`);
 
     timerRef.current = window.setTimeout(() => {
-      const result = runSimulation(current.assumptions, {
-        scenarios: UI_SCENARIO_COUNT,
-        seed,
-      });
-      const latest = parseForm(formRef.current);
-      const latestHasErrors = Object.keys(latest.errors).length > 0;
-      const resultsAreCurrent =
-        !latestHasErrors && assumptionsEqual(latest.assumptions, current.assumptions);
-      setProjection(result);
-      setLastRun(current.assumptions);
-      setIsRunning(false);
-      setStatusMessage(
-        resultsAreCurrent
-          ? `Forecast updated with ${UI_SCENARIO_COUNT.toLocaleString("en-US")} scenarios.`
-          : "Forecast finished, but current assumptions differ from this run. Run it again to refresh.",
-      );
-      timerRef.current = undefined;
+      try {
+        const result = runSimulation(current.assumptions, {
+          scenarios: UI_SCENARIO_COUNT,
+          seed: INITIAL_SEED,
+        });
+        const latest = parseForm(formRef.current);
+        const latestHasErrors = Object.keys(latest.errors).length > 0;
+        const resultsAreCurrent =
+          !latestHasErrors && assumptionsEqual(latest.assumptions, current.assumptions);
+        setProjection(result);
+        setLastRun(current.assumptions);
+        setStatusMessage(
+          resultsAreCurrent
+            ? `Forecast updated with ${UI_SCENARIO_COUNT.toLocaleString("en-US")} scenarios.`
+            : "Forecast finished, but current assumptions differ from this run. Run it again to refresh.",
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "The forecast could not be completed safely.";
+        setRunError(message);
+        setStatusMessage(`Forecast failed: ${message}`);
+      } finally {
+        setIsRunning(false);
+        timerRef.current = undefined;
+      }
     }, 20);
   };
 
@@ -313,7 +379,7 @@ export default function App() {
               <div className="fields-grid">
                 <AssumptionField
                   field="startingBalance"
-                  label="Starting balance"
+                  label="Starting balance (USD)"
                   value={form.startingBalance}
                   error={parsed.errors.startingBalance}
                   prefix="$"
@@ -323,7 +389,7 @@ export default function App() {
                 />
                 <AssumptionField
                   field="monthlyContribution"
-                  label="Monthly contribution"
+                  label="Monthly contribution (USD/month)"
                   value={form.monthlyContribution}
                   error={parsed.errors.monthlyContribution}
                   prefix="$"
@@ -333,7 +399,7 @@ export default function App() {
                 />
                 <AssumptionField
                   field="years"
-                  label="Time horizon"
+                  label="Time horizon (years)"
                   value={form.years}
                   error={parsed.errors.years}
                   suffix="years"
@@ -344,12 +410,28 @@ export default function App() {
                 />
                 <AssumptionField
                   field="targetTodayValue"
-                  label="Goal in today's dollars"
+                  label="Goal (today's USD)"
                   value={form.targetTodayValue}
                   error={parsed.errors.targetTodayValue}
                   prefix="$"
                   min={0}
                   step="1000"
+                  onChange={handleFieldChange}
+                />
+              </div>
+
+              <div className="planning-threshold">
+                <p className="field-group-label">Decision rule</p>
+                <AssumptionField
+                  field="targetSuccessBps"
+                  label="Modeled path threshold (percent)"
+                  value={form.targetSuccessBps}
+                  error={parsed.errors.targetSuccessBps}
+                  suffix="%"
+                  min={50}
+                  max={99}
+                  step="1"
+                  help="Northstar solves for alternatives supported by at least this share of the executed paths. This is not a real-world confidence level."
                   onChange={handleFieldChange}
                 />
               </div>
@@ -375,7 +457,7 @@ export default function App() {
               <div className="market-fields">
                 <AssumptionField
                   field="annualReturn"
-                  label="Expected annual return"
+                  label="Expected annual return (percent)"
                   value={form.annualReturn}
                   error={parsed.errors.annualReturn}
                   suffix="%"
@@ -386,7 +468,7 @@ export default function App() {
                 />
                 <AssumptionField
                   field="annualVolatility"
-                  label="Annual volatility"
+                  label="Annual volatility (percent)"
                   value={form.annualVolatility}
                   error={parsed.errors.annualVolatility}
                   suffix="%"
@@ -402,7 +484,7 @@ export default function App() {
                 <div className="market-fields">
                   <AssumptionField
                     field="annualInflation"
-                    label="Annual inflation"
+                    label="Annual inflation (percent)"
                     value={form.annualInflation}
                     error={parsed.errors.annualInflation}
                     suffix="%"
@@ -413,7 +495,7 @@ export default function App() {
                   />
                   <AssumptionField
                     field="annualFee"
-                    label="Annual portfolio fee"
+                    label="Annual portfolio fee (percent)"
                     value={form.annualFee}
                     error={parsed.errors.annualFee}
                     suffix="%"
@@ -442,6 +524,11 @@ export default function App() {
               {hasErrors ? (
                 <p id="run-disabled-reason" className="run-disabled-reason">
                   Fix the highlighted fields to continue.
+                </p>
+              ) : null}
+              {runError ? (
+                <p className="run-error">
+                  {runError}
                 </p>
               ) : null}
               <button type="button" className="reset-button" onClick={resetAssumptions}>
@@ -476,7 +563,7 @@ export default function App() {
                   <MetricCard
                     label="Simulated goal-hit rate"
                     value={formatProbability(projection.successProbability)}
-                    note={`${Math.round(projection.successProbability * projection.scenarioCount).toLocaleString("en-US")} of ${projection.scenarioCount.toLocaleString("en-US")} modeled paths reached ${formatCurrency(lastRun.targetTodayValue)} in today's dollars`}
+                    note={samplingSummary}
                     accent
                   />
                   <MetricCard
@@ -495,6 +582,64 @@ export default function App() {
                     note="An upper-tail modeled outcome, not a guarantee"
                   />
                 </div>
+
+                <p className="sampling-disclosure">
+                  The 95% conditional sampling-error interval estimates finite-path Monte Carlo
+                  noise under these fixed model assumptions. It does not measure model,
+                  assumption, or real-world uncertainty.
+                </p>
+
+                <section className="decision-panel" aria-labelledby="decision-title">
+                  <div className="decision-heading">
+                    <div>
+                      <p className="section-kicker">Modeled funding trade-offs</p>
+                      <h3 id="decision-title">
+                        Alternatives at a {formatProbability(planningThreshold)}
+                        {" "}modeled path threshold
+                      </h3>
+                    </div>
+                    <p>
+                      Solved on this exact seeded path set. Change the threshold to test a different
+                      planning rule.
+                    </p>
+                  </div>
+                  <div className="decision-grid">
+                    <DecisionCard
+                      label="Modeled monthly contribution at this threshold"
+                      value={
+                        projection.planning.requiredMonthlyContribution === null
+                          ? "Above model limit"
+                          : formatExactCurrency(projection.planning.requiredMonthlyContribution)
+                      }
+                      note={
+                        projection.planning.monthlyContributionGap === null
+                          ? "No bounded solution is available under the model limits"
+                          : projection.planning.monthlyContributionGap > 0
+                            ? `With the current real-dollar goal held fixed: ${formatExactCurrency(projection.planning.monthlyContributionGap)} above the current constant nominal monthly contribution`
+                            : "With the current real-dollar goal held fixed, the current constant nominal monthly contribution already meets this path threshold"
+                      }
+                    />
+                    <DecisionCard
+                      label="Goal supported in today's dollars"
+                      value={formatExactCurrency(projection.planning.supportedGoalToday)}
+                      note={`With the current constant nominal monthly contribution held fixed, at least ${formatProbability(planningThreshold)} of these paths finish at or above this real-dollar value`}
+                    />
+                    <DecisionCard
+                      label="Average gap when the goal is missed"
+                      value={
+                        projection.planning.averageGoalShortfall === null
+                          ? "No misses"
+                          : formatCurrency(projection.planning.averageGoalShortfall)
+                      }
+                      note={`Worst-decile average ending value: ${formatCurrency(projection.planning.lowerTailAverage)}`}
+                    />
+                    <DecisionCard
+                      label="90th-percentile net-return-index drawdown"
+                      value={formatProbability(projection.planning.p90NetNominalMaxDrawdown)}
+                      note={`Median: ${formatProbability(projection.planning.medianNetNominalMaxDrawdown)} · nominal growth index after fees; contributions excluded`}
+                    />
+                  </div>
+                </section>
 
                 <article className="chart-card">
                   <div className="chart-heading">

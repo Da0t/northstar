@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatCompactCurrency,
   formatCurrency,
+  formatExactCurrency,
   formatPercentageInput,
   formatProbability,
 } from "./format";
@@ -10,6 +11,11 @@ describe("formatting", () => {
   it("formats whole-dollar currency", () => {
     expect(formatCurrency(25_000)).toBe("$25,000");
     expect(formatCurrency(500_000.49)).toBe("$500,000");
+  });
+
+  it("preserves cent-direction planning values in exact currency", () => {
+    expect(formatExactCurrency(100.4)).toBe("$100.40");
+    expect(formatExactCurrency(100.6)).toBe("$100.60");
   });
 
   it("formats compact chart currency", () => {
