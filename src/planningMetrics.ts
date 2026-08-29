@@ -133,6 +133,28 @@ export function floorToCents(value: number): number {
   return cents / 100;
 }
 
+/** Subtracts displayed currency values in integer cents to avoid binary drift. */
+export function nonnegativeCurrencyDifference(
+  minuend: number,
+  subtrahend: number,
+): number {
+  for (const value of [minuend, subtrahend]) {
+    if (
+      !Number.isFinite(value) ||
+      value < 0 ||
+      value * 100 > Number.MAX_SAFE_INTEGER
+    ) {
+      throw new RangeError(
+        "Currency value must be finite, nonnegative, and safe at cent precision.",
+      );
+    }
+  }
+
+  const minuendCents = Math.round(minuend * 100);
+  const subtrahendCents = Math.round(subtrahend * 100);
+  return Math.max(0, minuendCents - subtrahendCents) / 100;
+}
+
 export function averageGoalShortfall(
   sortedOutcomes: readonly number[],
   goal: number,

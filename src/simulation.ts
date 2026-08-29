@@ -3,6 +3,7 @@ import {
   ceilToCents,
   floorToCents,
   lowerTailMean,
+  nonnegativeCurrencyDifference,
   requirementAtSuccessRate,
   supportedValueAtSuccessRate,
   wilsonInterval,
@@ -10,7 +11,7 @@ import {
 } from "./planningMetrics";
 
 export const UI_SCENARIO_COUNT = 5_000;
-export const MODEL_VERSION = "northstar-monte-carlo/2.2.0";
+export const MODEL_VERSION = "northstar-monte-carlo/2.2.1";
 export const MAX_SCENARIO_COUNT = 10_000;
 export const MAX_MONTHLY_UPDATES = 6_000_000;
 export const MAX_SNAPSHOT_CELLS = 510_000;
@@ -564,8 +565,9 @@ export function runSimulation(
       monthlyContributionGap:
         requiredMonthlyContribution === null
           ? null
-          : ceilToCents(
-              Math.max(0, requiredMonthlyContribution - input.monthlyContribution),
+          : nonnegativeCurrencyDifference(
+              requiredMonthlyContribution,
+              input.monthlyContribution,
             ),
       supportedGoalToday,
       averageGoalShortfall: averageGoalShortfall(

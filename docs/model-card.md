@@ -1,6 +1,6 @@
 # Northstar model card
 
-- **Model version:** `northstar-monte-carlo/2.2.0`
+- **Model version:** `northstar-monte-carlo/2.2.1`
 - **Status:** Educational, experimental planning model
 - **Last reviewed:** 2026-08-29
 - **Implementation:** [`src/simulation.ts`](../src/simulation.ts) and [`src/planningMetrics.ts`](../src/planningMetrics.ts)
@@ -63,7 +63,7 @@ Nominal invested capital is the starting balance plus nominal contributions. Rea
 
 - **Required monthly contribution:** solve the contribution required on each executed path, select the requirement supported by the chosen path share, then round upward to a cent. A rounded result that violates either the monthly-input ceiling or the balance boundary on any executed path is reported as unavailable.
 - **Supported goal:** select the largest final real-dollar value supported by the chosen path share, then round downward to a cent.
-- **Contribution gap:** the nonnegative difference between the solved and entered constant nominal monthly contributions.
+- **Contribution gap:** the nonnegative difference between the solved and entered constant nominal monthly contributions, calculated from their separately rounded integer-cent values.
 - **Average missed-goal gap:** average real-dollar shortfall across paths that finish below the goal; unavailable when no path misses.
 - **Lower-tail average:** arithmetic mean of the lowest 10% of final real-dollar outcomes, using a nonempty nearest-rank tail.
 - **Drawdown:** maximum peak-to-trough decline of the net nominal return index after fees. Contributions and inflation are excluded. Results expose the median and 90th percentile across paths.

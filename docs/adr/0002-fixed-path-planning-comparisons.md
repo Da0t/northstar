@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-29
-- **Decision scope:** UI forecast execution and model-version 2.2 planning alternatives
+- **Decision scope:** UI forecast execution and model-version 2.2-series planning alternatives
 - **Related decision:** [ADR 0001](0001-local-first-simulation.md) remains the local-execution decision and is not superseded.
 
 ## Context

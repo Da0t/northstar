@@ -1,7 +1,7 @@
 # Northstar threat model
 
 - **Scope:** Current browser-only educational application
-- **Model version reviewed:** `northstar-monte-carlo/2.2.0`
+- **Model version reviewed:** `northstar-monte-carlo/2.2.1`
 - **Last reviewed:** 2026-08-29
 
 ## Purpose and assets

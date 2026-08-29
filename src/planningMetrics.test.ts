@@ -5,6 +5,7 @@ import {
   ceilToCents,
   floorToCents,
   lowerTailMean,
+  nonnegativeCurrencyDifference,
   requirementAtSuccessRate,
   supportedValueAtSuccessRate,
   wilsonInterval,
@@ -72,5 +73,14 @@ describe("planning order statistics", () => {
     expect(ceilToCents(maxSafeCurrency)).toBe(maxSafeCurrency);
     expect(floorToCents(maxSafeCurrency)).toBe(maxSafeCurrency);
     expect(() => floorToCents(maxSafeCurrency + 1)).toThrow(/cent precision/);
+  });
+
+  it("subtracts displayed currency in integer cents without over-rounding", () => {
+    expect(nonnegativeCurrencyDifference(1_169.13, 750)).toBe(419.13);
+    expect(nonnegativeCurrencyDifference(100.4, 100)).toBe(0.4);
+    expect(nonnegativeCurrencyDifference(100, 100.01)).toBe(0);
+    expect(() => nonnegativeCurrencyDifference(Number.POSITIVE_INFINITY, 0)).toThrow(
+      /cent precision/,
+    );
   });
 });
