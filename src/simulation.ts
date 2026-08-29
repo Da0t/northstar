@@ -1,5 +1,5 @@
 export const UI_SCENARIO_COUNT = 5_000;
-export const MODEL_VERSION = "northstar-monte-carlo/2.0.0";
+export const MODEL_VERSION = "northstar-monte-carlo/2.1.0";
 export const MAX_SCENARIO_COUNT = 10_000;
 export const MAX_MONTHLY_UPDATES = 6_000_000;
 export const MAX_SNAPSHOT_CELLS = 510_000;
@@ -16,7 +16,9 @@ export interface PortfolioAssumptions {
   years: number;
   annualReturn: number;
   annualVolatility: number;
-  targetEndingValue: number;
+  annualInflation: number;
+  annualFee: number;
+  targetTodayValue: number;
 }
 
 export type AssumptionField = keyof PortfolioAssumptions;
@@ -26,14 +28,20 @@ export interface ValidationIssue {
   message: string;
 }
 
-export interface ForecastPoint {
-  year: number;
+export interface ForecastDistribution {
   p10: number;
   p25: number;
   p50: number;
   p75: number;
   p90: number;
-  invested: number;
+}
+
+export interface ForecastPoint {
+  year: number;
+  nominal: ForecastDistribution;
+  real: ForecastDistribution;
+  investedNominal: number;
+  investedReal: number;
 }
 
 export interface SimulationResult {
@@ -42,6 +50,7 @@ export interface SimulationResult {
   scenarioCount: number;
   seed: number;
   modelVersion: string;
+  targetNominal: number;
 }
 
 export interface SimulationOptions {
@@ -55,7 +64,9 @@ const ASSUMPTION_FIELDS: readonly AssumptionField[] = [
   "years",
   "annualReturn",
   "annualVolatility",
-  "targetEndingValue",
+  "annualInflation",
+  "annualFee",
+  "targetTodayValue",
 ];
 
 const DEFAULT_SEED = 0x4e4f5254;
@@ -125,16 +136,16 @@ export function validateAssumptions(input: PortfolioAssumptions): ValidationIssu
     }
   }
 
-  if (requireFinite("targetEndingValue", "Target ending value")) {
-    if (input.targetEndingValue < 0) {
+  if (requireFinite("targetTodayValue", "Goal in today's dollars")) {
+    if (input.targetTodayValue < 0) {
       issues.push({
-        field: "targetEndingValue",
-        message: "Target ending value cannot be negative.",
+        field: "targetTodayValue",
+        message: "Goal in today's dollars cannot be negative.",
       });
-    } else if (input.targetEndingValue > MAX_TARGET_ENDING_VALUE) {
+    } else if (input.targetTodayValue > MAX_TARGET_ENDING_VALUE) {
       issues.push({
-        field: "targetEndingValue",
-        message: "Target ending value must be $10 trillion or less.",
+        field: "targetTodayValue",
+        message: "Goal in today's dollars must be $10 trillion or less.",
       });
     }
   }
@@ -152,6 +163,24 @@ export function validateAssumptions(input: PortfolioAssumptions): ValidationIssu
       issues.push({
         field: "annualVolatility",
         message: "Annual volatility must be between 0% and 100%.",
+      });
+    }
+  }
+
+  if (requireFinite("annualInflation", "Annual inflation")) {
+    if (input.annualInflation < 0 || input.annualInflation > 0.2) {
+      issues.push({
+        field: "annualInflation",
+        message: "Annual inflation must be between 0% and 20%.",
+      });
+    }
+  }
+
+  if (requireFinite("annualFee", "Annual fee")) {
+    if (input.annualFee < 0 || input.annualFee > 0.1) {
+      issues.push({
+        field: "annualFee",
+        message: "Annual fee must be between 0% and 10%.",
       });
     }
   }
@@ -258,6 +287,31 @@ function investedCapital(input: PortfolioAssumptions, year: number): number {
   );
 }
 
+function inflationIndex(input: PortfolioAssumptions, year: number): number {
+  return (1 + input.annualInflation) ** year;
+}
+
+function investedCapitalReal(input: PortfolioAssumptions, year: number): number {
+  let realCapital = input.startingBalance;
+  for (let month = 1; month <= year * 12; month += 1) {
+    realCapital += input.monthlyContribution / inflationIndex(input, month / 12);
+  }
+  return checkedBalance(realCapital, "inflation-adjusted invested capital");
+}
+
+function distribution(
+  sortedValues: readonly number[],
+  divisor = 1,
+): ForecastDistribution {
+  return {
+    p10: percentile(sortedValues, 0.1) / divisor,
+    p25: percentile(sortedValues, 0.25) / divisor,
+    p50: percentile(sortedValues, 0.5) / divisor,
+    p75: percentile(sortedValues, 0.75) / divisor,
+    p90: percentile(sortedValues, 0.9) / divisor,
+  };
+}
+
 export function resolveSimulationOptions(
   options: SimulationOptions,
   years: number,
@@ -304,6 +358,11 @@ export function runSimulation(
   const monthlyDrift =
     (Math.log1p(input.annualReturn) - 0.5 * input.annualVolatility ** 2) / 12;
   const monthlyDiffusion = input.annualVolatility / Math.sqrt(12);
+  const monthlyFeeFactor = (1 - input.annualFee) ** (1 / 12);
+  const targetNominal = checkedBalance(
+    input.targetTodayValue * inflationIndex(input, input.years),
+    "inflation-adjusted goal",
+  );
   let successes = 0;
 
   for (let scenario = 0; scenario < scenarioCount; scenario += 1) {
@@ -316,7 +375,7 @@ export function runSimulation(
     for (let month = 1; month <= input.years * 12; month += 1) {
       const factor = Math.exp(monthlyDrift + monthlyDiffusion * normal());
       balance = checkedBalance(
-        balance * factor + input.monthlyContribution,
+        balance * factor * monthlyFeeFactor + input.monthlyContribution,
         `balance in scenario ${scenario + 1}, month ${month}`,
       );
 
@@ -328,21 +387,20 @@ export function runSimulation(
       }
     }
 
-    if (balance >= input.targetEndingValue) {
+    if (balance >= targetNominal) {
       successes += 1;
     }
   }
 
   const points = snapshots.map((values, year) => {
     values.sort((a, b) => a - b);
+    const yearlyInflationIndex = inflationIndex(input, year);
     return {
       year,
-      p10: percentile(values, 0.1),
-      p25: percentile(values, 0.25),
-      p50: percentile(values, 0.5),
-      p75: percentile(values, 0.75),
-      p90: percentile(values, 0.9),
-      invested: investedCapital(input, year),
+      nominal: distribution(values),
+      real: distribution(values, yearlyInflationIndex),
+      investedNominal: investedCapital(input, year),
+      investedReal: investedCapitalReal(input, year),
     };
   });
 
@@ -352,5 +410,6 @@ export function runSimulation(
     scenarioCount,
     seed,
     modelVersion: MODEL_VERSION,
+    targetNominal,
   };
 }

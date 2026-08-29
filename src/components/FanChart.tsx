@@ -2,9 +2,22 @@ import { useId } from "react";
 import { formatCompactCurrency, formatCurrency } from "../format";
 import type { ForecastPoint } from "../simulation";
 
+export type DollarMode = "real" | "nominal";
+
 interface FanChartProps {
   points: ForecastPoint[];
   target: number;
+  mode: DollarMode;
+}
+
+interface ChartPoint {
+  year: number;
+  p10: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p90: number;
+  invested: number;
 }
 
 const WIDTH = 840;
@@ -14,9 +27,9 @@ const INNER_WIDTH = WIDTH - MARGIN.left - MARGIN.right;
 const INNER_HEIGHT = HEIGHT - MARGIN.top - MARGIN.bottom;
 
 function linePath(
-  points: ForecastPoint[],
-  x: (point: ForecastPoint) => number,
-  y: (point: ForecastPoint) => number,
+  points: ChartPoint[],
+  x: (point: ChartPoint) => number,
+  y: (point: ChartPoint) => number,
 ): string {
   return points
     .map((point, index) => `${index === 0 ? "M" : "L"}${x(point).toFixed(2)},${y(point).toFixed(2)}`)
@@ -24,10 +37,10 @@ function linePath(
 }
 
 function areaPath(
-  points: ForecastPoint[],
-  x: (point: ForecastPoint) => number,
-  upper: (point: ForecastPoint) => number,
-  lower: (point: ForecastPoint) => number,
+  points: ChartPoint[],
+  x: (point: ChartPoint) => number,
+  upper: (point: ChartPoint) => number,
+  lower: (point: ChartPoint) => number,
 ): string {
   if (points.length === 0) {
     return "";
@@ -53,14 +66,20 @@ function makeYearTicks(maxYear: number): number[] {
   return [...new Set(ticks)];
 }
 
-export function FanChart({ points, target }: FanChartProps) {
+export function FanChart({ points, target, mode }: FanChartProps) {
   const titleId = useId();
   const descriptionId = useId();
-  const safePoints = points.filter((point) =>
-    [point.p10, point.p25, point.p50, point.p75, point.p90, point.invested].every(
-      (value) => Number.isFinite(value) && value >= 0,
-    ),
-  );
+  const safePoints = points
+    .map((point): ChartPoint => ({
+      year: point.year,
+      ...point[mode],
+      invested: mode === "real" ? point.investedReal : point.investedNominal,
+    }))
+    .filter((point) =>
+      [point.p10, point.p25, point.p50, point.p75, point.p90, point.invested].every(
+        (value) => Number.isFinite(value) && value >= 0,
+      ),
+    );
 
   if (safePoints.length === 0) {
     return <p className="chart-empty">No valid forecast points are available.</p>;
@@ -69,7 +88,7 @@ export function FanChart({ points, target }: FanChartProps) {
   const maxYear = Math.max(1, safePoints.at(-1)?.year ?? 1);
   const rawMax = Math.max(target, ...safePoints.map((point) => Math.max(point.p90, point.invested)), 1);
   const yMax = rawMax > Number.MAX_VALUE / 1.12 ? rawMax : rawMax * 1.12;
-  const xScale = (point: ForecastPoint) => MARGIN.left + (point.year / maxYear) * INNER_WIDTH;
+  const xScale = (point: ChartPoint) => MARGIN.left + (point.year / maxYear) * INNER_WIDTH;
   const yScaleValue = (value: number) => MARGIN.top + INNER_HEIGHT - (value / yMax) * INNER_HEIGHT;
   const yTicks = Array.from({ length: 5 }, (_, index) => yMax * (index / 4));
   const yearTicks = makeYearTicks(maxYear);
@@ -85,10 +104,13 @@ export function FanChart({ points, target }: FanChartProps) {
         aria-labelledby={`${titleId} ${descriptionId}`}
         preserveAspectRatio="xMidYMid meet"
       >
-        <title id={titleId}>Portfolio range over {maxYear} years</title>
+        <title id={titleId}>
+          Portfolio range over {maxYear} years in {mode === "real" ? "today's" : "nominal"} dollars
+        </title>
         <desc id={descriptionId}>
           A fan chart showing the tenth through ninetieth percentile range, the interquartile
-          range, median portfolio value, invested capital, and a goal of {formatCurrency(target)}.
+          range, median portfolio value, invested capital, and a goal of {formatCurrency(target)}
+          {mode === "real" ? " in today's purchasing power" : " in future nominal dollars"}.
         </desc>
 
         <g className="chart-legend" aria-hidden="true">

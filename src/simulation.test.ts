@@ -21,7 +21,9 @@ const BASE: PortfolioAssumptions = {
   years: 20,
   annualReturn: 0.07,
   annualVolatility: 0.15,
-  targetEndingValue: 500_000,
+  annualInflation: 0,
+  annualFee: 0,
+  targetTodayValue: 500_000,
 };
 
 describe("assumptionsEqual", () => {
@@ -35,7 +37,9 @@ describe("assumptionsEqual", () => {
     ["years", 21],
     ["annualReturn", 0.071],
     ["annualVolatility", 0.151],
-    ["targetEndingValue", 500_001],
+    ["annualInflation", 0.02],
+    ["annualFee", 0.0025],
+    ["targetTodayValue", 500_001],
   ] as const)("detects a changed %s", (field, value) => {
     expect(assumptionsEqual(BASE, { ...BASE, [field]: value })).toBe(false);
   });
@@ -52,7 +56,9 @@ describe("runSimulation", () => {
     const differentSeed = runSimulation(BASE, { scenarios: 250, seed: 43 });
 
     expect(first).toEqual(second);
-    expect(differentSeed.points.at(-1)?.p50).not.toBe(first.points.at(-1)?.p50);
+    expect(differentSeed.points.at(-1)?.nominal.p50).not.toBe(
+      first.points.at(-1)?.nominal.p50,
+    );
     expect(first).toMatchObject({ seed: 42, modelVersion: MODEL_VERSION });
   });
 
@@ -73,11 +79,12 @@ describe("runSimulation", () => {
       assumptions.monthlyContribution * ((monthlyFactor ** months - 1) / (monthlyFactor - 1));
     const final = result.points.at(-1);
 
-    expect(final?.p10).toBeCloseTo(expected, 7);
-    expect(final?.p25).toBeCloseTo(expected, 7);
-    expect(final?.p50).toBeCloseTo(expected, 7);
-    expect(final?.p75).toBeCloseTo(expected, 7);
-    expect(final?.p90).toBeCloseTo(expected, 7);
+    expect(final?.nominal.p10).toBeCloseTo(expected, 7);
+    expect(final?.nominal.p25).toBeCloseTo(expected, 7);
+    expect(final?.nominal.p50).toBeCloseTo(expected, 7);
+    expect(final?.nominal.p75).toBeCloseTo(expected, 7);
+    expect(final?.nominal.p90).toBeCloseTo(expected, 7);
+    expect(final?.real).toEqual(final?.nominal);
   });
 
   it("accumulates end-of-month contributions exactly when return and volatility are zero", () => {
@@ -93,8 +100,10 @@ describe("runSimulation", () => {
 
     for (const point of result.points) {
       const expected = assumptions.startingBalance + assumptions.monthlyContribution * point.year * 12;
-      expect(point.p50).toBe(expected);
-      expect(point.invested).toBe(expected);
+      expect(point.nominal.p50).toBe(expected);
+      expect(point.real.p50).toBe(expected);
+      expect(point.investedNominal).toBe(expected);
+      expect(point.investedReal).toBe(expected);
     }
   });
 
@@ -104,20 +113,25 @@ describe("runSimulation", () => {
         ...BASE,
         startingBalance: 0,
         monthlyContribution: 0,
-        targetEndingValue: 1,
+        targetTodayValue: 1,
       },
       { scenarios: 50, seed: 7 },
     );
 
     expect(result.successProbability).toBe(0);
     for (const point of result.points) {
-      expect(point).toMatchObject({ p10: 0, p25: 0, p50: 0, p75: 0, p90: 0, invested: 0 });
+      expect(point).toMatchObject({
+        nominal: { p10: 0, p25: 0, p50: 0, p75: 0, p90: 0 },
+        real: { p10: 0, p25: 0, p50: 0, p75: 0, p90: 0 },
+        investedNominal: 0,
+        investedReal: 0,
+      });
     }
   });
 
   it("treats a zero target as reached in every nonnegative path", () => {
     const result = runSimulation(
-      { ...BASE, startingBalance: 0, monthlyContribution: 0, targetEndingValue: 0 },
+      { ...BASE, startingBalance: 0, monthlyContribution: 0, targetTodayValue: 0 },
       { scenarios: 50, seed: 3 },
     );
     expect(result.successProbability).toBe(1);
@@ -132,7 +146,7 @@ describe("runSimulation", () => {
         years: 1,
         annualReturn: 0,
         annualVolatility: 0,
-        targetEndingValue: 100,
+        targetTodayValue: 100,
       },
       { scenarios: 3, seed: 1 },
     );
@@ -143,13 +157,15 @@ describe("runSimulation", () => {
     const result = runSimulation(BASE, { scenarios: 400, seed: 1234 });
 
     for (const point of result.points) {
-      const values = [point.p10, point.p25, point.p50, point.p75, point.p90];
-      expect(values.every((value) => Number.isFinite(value) && value >= 0)).toBe(true);
-      expect(point.invested).toBeGreaterThanOrEqual(0);
-      expect(point.p10).toBeLessThanOrEqual(point.p25);
-      expect(point.p25).toBeLessThanOrEqual(point.p50);
-      expect(point.p50).toBeLessThanOrEqual(point.p75);
-      expect(point.p75).toBeLessThanOrEqual(point.p90);
+      for (const values of [Object.values(point.nominal), Object.values(point.real)]) {
+        expect(values.every((value) => Number.isFinite(value) && value >= 0)).toBe(true);
+        expect(values[0]).toBeLessThanOrEqual(values[1]!);
+        expect(values[1]).toBeLessThanOrEqual(values[2]!);
+        expect(values[2]).toBeLessThanOrEqual(values[3]!);
+        expect(values[3]).toBeLessThanOrEqual(values[4]!);
+      }
+      expect(point.investedNominal).toBeGreaterThanOrEqual(0);
+      expect(point.investedReal).toBeGreaterThanOrEqual(0);
     }
   });
 
@@ -157,7 +173,7 @@ describe("runSimulation", () => {
     const result = runSimulation({ ...BASE, years: 7 }, { scenarios: 5, seed: 5 });
     expect(result.points).toHaveLength(8);
     expect(result.points.map((point) => point.year)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
-    expect(result.points[0]).toMatchObject({
+    expect(result.points[0]?.nominal).toEqual({
       p10: BASE.startingBalance,
       p25: BASE.startingBalance,
       p50: BASE.startingBalance,
@@ -180,6 +196,90 @@ describe("runSimulation", () => {
         { scenarios: 1, seed: 0 },
       ),
     ).toThrow(SimulationNumericalError);
+  });
+});
+
+describe("fees and purchasing power", () => {
+  it("keeps nominal mechanics unchanged while deflating outcomes into today's dollars", () => {
+    const assumptions: PortfolioAssumptions = {
+      ...BASE,
+      startingBalance: 100_000,
+      monthlyContribution: 0,
+      years: 10,
+      annualReturn: 0,
+      annualVolatility: 0,
+      annualInflation: 0.02,
+      targetTodayValue: 90_000,
+    };
+    const result = runSimulation(assumptions, { scenarios: 2, seed: 4 });
+    const final = result.points.at(-1)!;
+    const inflationIndex = 1.02 ** 10;
+
+    expect(final.nominal.p50).toBe(100_000);
+    expect(final.real.p50).toBeCloseTo(100_000 / inflationIndex, 10);
+    expect(result.targetNominal).toBeCloseTo(90_000 * inflationIndex, 10);
+    expect(result.successProbability).toBe(0);
+  });
+
+  it("applies the annual fee as a proportional monthly asset charge", () => {
+    const assumptions: PortfolioAssumptions = {
+      ...BASE,
+      startingBalance: 10_000,
+      monthlyContribution: 400,
+      years: 3,
+      annualReturn: 0.06,
+      annualVolatility: 0,
+      annualFee: 0.01,
+    };
+    const result = runSimulation(assumptions, { scenarios: 3, seed: 6 });
+    const monthlyFactor =
+      Math.exp(Math.log1p(assumptions.annualReturn) / 12) *
+      (1 - assumptions.annualFee) ** (1 / 12);
+    const months = assumptions.years * 12;
+    const expected =
+      assumptions.startingBalance * monthlyFactor ** months +
+      assumptions.monthlyContribution *
+        ((monthlyFactor ** months - 1) / (monthlyFactor - 1));
+
+    expect(result.points.at(-1)?.nominal.p50).toBeCloseTo(expected, 7);
+  });
+
+  it("never improves a same-seed percentile when a positive fee is added", () => {
+    const withoutFee = runSimulation(BASE, { scenarios: 250, seed: 77 });
+    const withFee = runSimulation(
+      { ...BASE, annualFee: 0.01 },
+      { scenarios: 250, seed: 77 },
+    );
+
+    for (let index = 0; index < withoutFee.points.length; index += 1) {
+      const baseline = withoutFee.points[index]!;
+      const charged = withFee.points[index]!;
+      for (const quantile of ["p10", "p25", "p50", "p75", "p90"] as const) {
+        expect(charged.nominal[quantile]).toBeLessThanOrEqual(
+          baseline.nominal[quantile],
+        );
+      }
+    }
+  });
+
+  it("reports inflation-adjusted contributed capital at each deposit date", () => {
+    const assumptions: PortfolioAssumptions = {
+      ...BASE,
+      startingBalance: 0,
+      monthlyContribution: 100,
+      years: 1,
+      annualReturn: 0,
+      annualVolatility: 0,
+      annualInflation: 0.12,
+    };
+    const expectedRealCapital = Array.from(
+      { length: 12 },
+      (_, index) => 100 / 1.12 ** ((index + 1) / 12),
+    ).reduce((sum, value) => sum + value, 0);
+
+    const final = runSimulation(assumptions, { scenarios: 1, seed: 8 }).points.at(-1)!;
+    expect(final.investedNominal).toBe(1_200);
+    expect(final.investedReal).toBeCloseTo(expectedRealCapital, 10);
   });
 });
 
@@ -247,9 +347,11 @@ describe("validation", () => {
   it.each([
     ["startingBalance", Number.NaN],
     ["monthlyContribution", Number.POSITIVE_INFINITY],
-    ["targetEndingValue", Number.NEGATIVE_INFINITY],
+    ["targetTodayValue", Number.NEGATIVE_INFINITY],
     ["annualReturn", Number.NaN],
     ["annualVolatility", Number.POSITIVE_INFINITY],
+    ["annualInflation", Number.NaN],
+    ["annualFee", Number.POSITIVE_INFINITY],
     ["years", Number.NaN],
   ] as const)("rejects a nonfinite %s", (field, value) => {
     const assumptions = { ...BASE, [field]: value };
@@ -262,9 +364,13 @@ describe("validation", () => {
   it.each([
     { field: "startingBalance", value: -1 },
     { field: "monthlyContribution", value: -1 },
-    { field: "targetEndingValue", value: -1 },
+    { field: "targetTodayValue", value: -1 },
     { field: "annualVolatility", value: -0.01 },
     { field: "annualVolatility", value: 1.01 },
+    { field: "annualInflation", value: -0.01 },
+    { field: "annualInflation", value: 0.201 },
+    { field: "annualFee", value: -0.01 },
+    { field: "annualFee", value: 0.101 },
     { field: "annualReturn", value: -1 },
     { field: "annualReturn", value: -2 },
     { field: "annualReturn", value: 1.01 },
@@ -285,7 +391,7 @@ describe("validation", () => {
   it.each([
     { field: "startingBalance", value: 1_000_000_000_001 },
     { field: "monthlyContribution", value: 100_000_001 },
-    { field: "targetEndingValue", value: 10_000_000_000_001 },
+    { field: "targetTodayValue", value: 10_000_000_000_001 },
   ] as const)("rejects an unsafe financial input boundary: $field", ({ field, value }) => {
     expect(validateAssumptions({ ...BASE, [field]: value })).toEqual(
       expect.arrayContaining([expect.objectContaining({ field })]),

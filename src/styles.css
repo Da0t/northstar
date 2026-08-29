@@ -407,6 +407,19 @@ main {
   gap: 12px;
 }
 
+.economic-assumptions {
+  margin-top: 18px;
+  padding-top: 17px;
+  border-top: 1px solid #e3e4dd;
+}
+
+.field-group-label {
+  margin: 0 0 10px;
+  color: #485750;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .model-note {
   margin: 11px 0 20px;
   color: #748079;
@@ -611,6 +624,33 @@ main {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.dollar-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 3px;
+  border: 1px solid #d7dbd4;
+  border-radius: 10px;
+  background: #f5f4ef;
+}
+
+.dollar-toggle button {
+  min-height: 44px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 7px;
+  color: #5d6963;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.dollar-toggle button[aria-pressed="true"] {
+  color: var(--emerald-dark);
+  background: #fffdf8;
+  box-shadow: 0 1px 4px rgba(30, 48, 41, 0.1);
 }
 
 .chart-shell {
@@ -923,11 +963,17 @@ main {
   }
 
   .chart-heading {
+    align-items: flex-start;
+    flex-direction: column;
     padding: 0 9px;
   }
 
-  .chart-heading > span {
-    display: none;
+  .dollar-toggle {
+    width: 100%;
+  }
+
+  .dollar-toggle button {
+    flex: 1;
   }
 
   .chart-shell {

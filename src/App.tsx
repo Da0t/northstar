@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FanChart } from "./components/FanChart";
+import { FanChart, type DollarMode } from "./components/FanChart";
 import { formatCurrency, formatPercentageInput, formatProbability } from "./format";
 import {
   UI_SCENARIO_COUNT,
@@ -19,13 +19,15 @@ const DEFAULT_ASSUMPTIONS: PortfolioAssumptions = {
   years: 20,
   annualReturn: 0.07,
   annualVolatility: 0.15,
-  targetEndingValue: 500_000,
+  annualInflation: 0.025,
+  annualFee: 0.0025,
+  targetTodayValue: 500_000,
 };
 
 const PRESETS = [
-  { name: "Conservative", return: 4, volatility: 8 },
-  { name: "Balanced", return: 7, volatility: 15 },
-  { name: "Growth", return: 9, volatility: 22 },
+  { name: "Lower variation", return: 4, volatility: 8 },
+  { name: "Baseline", return: 7, volatility: 15 },
+  { name: "Higher variation", return: 9, volatility: 22 },
 ] as const;
 
 type FormState = Record<AssumptionField, string>;
@@ -51,7 +53,9 @@ function assumptionsToForm(assumptions: PortfolioAssumptions): FormState {
     years: String(assumptions.years),
     annualReturn: formatPercentageInput(assumptions.annualReturn),
     annualVolatility: formatPercentageInput(assumptions.annualVolatility),
-    targetEndingValue: String(assumptions.targetEndingValue),
+    annualInflation: formatPercentageInput(assumptions.annualInflation),
+    annualFee: formatPercentageInput(assumptions.annualFee),
+    targetTodayValue: String(assumptions.targetTodayValue),
   };
 }
 
@@ -66,7 +70,9 @@ function parseForm(form: FormState): { assumptions: PortfolioAssumptions; errors
     years: parseNumber(form.years),
     annualReturn: parseNumber(form.annualReturn) / 100,
     annualVolatility: parseNumber(form.annualVolatility) / 100,
-    targetEndingValue: parseNumber(form.targetEndingValue),
+    annualInflation: parseNumber(form.annualInflation) / 100,
+    annualFee: parseNumber(form.annualFee) / 100,
+    targetTodayValue: parseNumber(form.targetTodayValue),
   };
   const errors: FormErrors = {};
 
@@ -148,14 +154,6 @@ function MetricCard({
   );
 }
 
-function outcomeLabel(probability: number): string {
-  if (probability >= 0.8) return "a strong modeled likelihood";
-  if (probability >= 0.6) return "a better-than-even modeled likelihood";
-  if (probability >= 0.4) return "a roughly even modeled likelihood";
-  if (probability >= 0.2) return "a lower modeled likelihood";
-  return "a limited modeled likelihood";
-}
-
 export default function App() {
   const [form, setForm] = useState<FormState>(() => assumptionsToForm(DEFAULT_ASSUMPTIONS));
   const [projection, setProjection] = useState<SimulationResult>(() =>
@@ -163,6 +161,7 @@ export default function App() {
   );
   const [lastRun, setLastRun] = useState<PortfolioAssumptions>(DEFAULT_ASSUMPTIONS);
   const [isRunning, setIsRunning] = useState(false);
+  const [dollarMode, setDollarMode] = useState<DollarMode>("real");
   const [statusMessage, setStatusMessage] = useState("Initial forecast ready.");
   const formRef = useRef(form);
   const nextSeedRef = useRef(INITIAL_SEED + 1);
@@ -171,6 +170,11 @@ export default function App() {
   const hasErrors = Object.keys(parsed.errors).length > 0;
   const isStale = hasErrors || !assumptionsEqual(parsed.assumptions, lastRun);
   const finalPoint = projection.points.at(-1);
+  const finalDistribution = finalPoint?.[dollarMode];
+  const displayedGoal =
+    dollarMode === "real" ? lastRun.targetTodayValue : projection.targetNominal;
+  const displayedInvested =
+    dollarMode === "real" ? finalPoint?.investedReal : finalPoint?.investedNominal;
 
   useEffect(
     () => () => {
@@ -339,10 +343,10 @@ export default function App() {
                   onChange={handleFieldChange}
                 />
                 <AssumptionField
-                  field="targetEndingValue"
-                  label="Target ending value"
-                  value={form.targetEndingValue}
-                  error={parsed.errors.targetEndingValue}
+                  field="targetTodayValue"
+                  label="Goal in today's dollars"
+                  value={form.targetTodayValue}
+                  error={parsed.errors.targetTodayValue}
                   prefix="$"
                   min={0}
                   step="1000"
@@ -351,7 +355,7 @@ export default function App() {
               </div>
 
               <fieldset className="preset-fieldset">
-                <legend>Market profile</legend>
+                <legend>Illustrative return and variability pair</legend>
                 <div className="preset-group">
                   {PRESETS.map((preset) => (
                     <button
@@ -393,8 +397,37 @@ export default function App() {
                 />
               </div>
 
+              <div className="economic-assumptions">
+                <p className="field-group-label">Purchasing power and costs</p>
+                <div className="market-fields">
+                  <AssumptionField
+                    field="annualInflation"
+                    label="Annual inflation"
+                    value={form.annualInflation}
+                    error={parsed.errors.annualInflation}
+                    suffix="%"
+                    min={0}
+                    max={20}
+                    step="0.1"
+                    onChange={handleFieldChange}
+                  />
+                  <AssumptionField
+                    field="annualFee"
+                    label="Annual portfolio fee"
+                    value={form.annualFee}
+                    error={parsed.errors.annualFee}
+                    suffix="%"
+                    min={0}
+                    max={10}
+                    step="0.05"
+                    onChange={handleFieldChange}
+                  />
+                </div>
+              </div>
+
               <p className="model-note">
-                Return is the long-run average; volatility controls how widely paths can vary.
+                Return is gross of fees. The annual fee is charged proportionally each month;
+                inflation converts future balances back into today's purchasing power.
               </p>
 
               <button
@@ -437,29 +470,29 @@ export default function App() {
               {statusMessage}
             </p>
 
-            {finalPoint ? (
+            {finalPoint && finalDistribution && displayedInvested !== undefined ? (
               <>
                 <div className="metric-grid">
                   <MetricCard
-                    label="Chance of reaching goal"
+                    label="Simulated goal-hit rate"
                     value={formatProbability(projection.successProbability)}
-                    note={`Goal: ${formatCurrency(lastRun.targetEndingValue)}`}
+                    note={`${Math.round(projection.successProbability * projection.scenarioCount).toLocaleString("en-US")} of ${projection.scenarioCount.toLocaleString("en-US")} modeled paths reached ${formatCurrency(lastRun.targetTodayValue)} in today's dollars`}
                     accent
                   />
                   <MetricCard
-                    label="Median ending value"
-                    value={formatCurrency(finalPoint.p50)}
-                    note="Half of paths finish above"
+                    label="50th-percentile ending value"
+                    value={formatCurrency(finalDistribution.p50)}
+                    note={dollarMode === "real" ? "In today's purchasing power" : "In future nominal dollars"}
                   />
                   <MetricCard
-                    label="10th percentile"
-                    value={formatCurrency(finalPoint.p10)}
-                    note="A cautious downside case"
+                    label="10th-percentile ending value"
+                    value={formatCurrency(finalDistribution.p10)}
+                    note="A lower-tail modeled outcome, not a worst case"
                   />
                   <MetricCard
-                    label="90th percentile"
-                    value={formatCurrency(finalPoint.p90)}
-                    note="An optimistic upside case"
+                    label="90th-percentile ending value"
+                    value={formatCurrency(finalDistribution.p90)}
+                    note="An upper-tail modeled outcome, not a guarantee"
                   />
                 </div>
 
@@ -469,22 +502,45 @@ export default function App() {
                       <h3>Range of possible outcomes</h3>
                       <p>Annual snapshots across {projection.scenarioCount.toLocaleString("en-US")} simulated paths</p>
                     </div>
-                    <span>Nominal dollars</span>
+                    <div className="dollar-toggle" role="group" aria-label="Forecast dollar display">
+                      <button
+                        type="button"
+                        aria-pressed={dollarMode === "real"}
+                        onClick={() => setDollarMode("real")}
+                      >
+                        Today's dollars
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={dollarMode === "nominal"}
+                        onClick={() => setDollarMode("nominal")}
+                      >
+                        Nominal dollars
+                      </button>
+                    </div>
                   </div>
-                  <FanChart points={projection.points} target={lastRun.targetEndingValue} />
+                  <FanChart
+                    points={projection.points}
+                    target={displayedGoal}
+                    mode={dollarMode}
+                  />
                 </article>
 
                 <article className="summary-card">
                   <span className="summary-marker" aria-hidden="true">N</span>
                   <div>
-                    <p className="section-kicker">What this suggests</p>
-                    <h3>{outcomeLabel(projection.successProbability)} of meeting your goal.</h3>
+                    <p className="section-kicker">Read this run literally</p>
+                    <h3>
+                      {formatProbability(projection.successProbability)} of the executed model paths
+                      reached the purchasing-power goal.
+                    </h3>
                     <p>
-                      In this run, {formatProbability(projection.successProbability)} of paths reached
-                      {" "}{formatCurrency(lastRun.targetEndingValue)} or more. The middle path ended at
-                      {" "}{formatCurrency(finalPoint.p50)}, compared with {formatCurrency(finalPoint.invested)}
-                      {" "}of total invested capital. Eight in ten modeled outcomes landed between
-                      {" "}{formatCurrency(finalPoint.p10)} and {formatCurrency(finalPoint.p90)}.
+                      The 50th-percentile outcome is {formatCurrency(finalDistribution.p50)} and the
+                      modeled 10th–90th percentile range is {formatCurrency(finalDistribution.p10)} to
+                      {" "}{formatCurrency(finalDistribution.p90)} in {dollarMode === "real" ? "today's" : "nominal"}
+                      {" "}dollars. The displayed invested-capital line is {formatCurrency(displayedInvested)}
+                      {" "}at year {lastRun.years}. These results are conditional on the entered return,
+                      volatility, inflation, fee, contribution, and Gaussian independence assumptions.
                     </p>
                   </div>
                 </article>
@@ -496,9 +552,9 @@ export default function App() {
         <footer className="disclaimer">
           <strong>For education, not prediction.</strong>
           <p>
-            Northstar shows hypothetical outcomes in nominal dollars. It excludes taxes, fees,
-            inflation, and changing allocations, and assumes contributions stay constant. Results
-            are not guarantees and are not investment advice.
+            Northstar shows hypothetical outcomes in both nominal and today's dollars. It models a
+            constant annual fee and inflation assumption, but excludes taxes, changing allocations,
+            and changing contributions. Results are not guarantees and are not investment advice.
           </p>
         </footer>
       </main>
