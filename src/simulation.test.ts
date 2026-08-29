@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_SCENARIO_COUNT,
+  MAX_UINT32,
+  MODEL_VERSION,
+  SimulationNumericalError,
   SimulationValidationError,
   assumptionsEqual,
+  createNormalGenerator,
+  mulberry32,
+  percentile,
+  resolveSimulationOptions,
   runSimulation,
   validateAssumptions,
   type PortfolioAssumptions,
@@ -45,6 +53,7 @@ describe("runSimulation", () => {
 
     expect(first).toEqual(second);
     expect(differentSeed.points.at(-1)?.p50).not.toBe(first.points.at(-1)?.p50);
+    expect(first).toMatchObject({ seed: 42, modelVersion: MODEL_VERSION });
   });
 
   it("collapses every percentile to the closed-form value at zero volatility", () => {
@@ -156,6 +165,82 @@ describe("runSimulation", () => {
       p90: BASE.startingBalance,
     });
   });
+
+  it("surfaces numerical overflow instead of converting it into apparent wealth", () => {
+    expect(() =>
+      runSimulation(
+        {
+          ...BASE,
+          startingBalance: 1_000_000_000_000,
+          monthlyContribution: 0,
+          years: 50,
+          annualReturn: 1,
+          annualVolatility: 0,
+        },
+        { scenarios: 1, seed: 0 },
+      ),
+    ).toThrow(SimulationNumericalError);
+  });
+});
+
+describe("deterministic random stream", () => {
+  it("pins the Mulberry32 stream for model-version review", () => {
+    const random = mulberry32(0);
+    expect(Array.from({ length: 5 }, () => random())).toEqual([
+      0.26642920868471265,
+      0.0003297457005828619,
+      0.2232720274478197,
+      0.1462021479383111,
+      0.46732782293111086,
+    ]);
+  });
+
+  it("resamples a zero Box-Muller radius input instead of inventing an extreme tail", () => {
+    const draws = [0, 0.25, 0];
+    const normal = createNormalGenerator(() => draws.shift() ?? 0.5);
+
+    expect(normal()).toBeCloseTo(Math.sqrt(-2 * Math.log(0.25)), 12);
+    expect(normal()).toBeCloseTo(0, 12);
+  });
+
+  it("rejects invalid random sources and aliased seeds", () => {
+    expect(() => createNormalGenerator(() => 1)()).toThrow(RangeError);
+    expect(() => createNormalGenerator(() => 0)()).toThrow(/zero too many/);
+    for (const seed of [-1, 1.5, MAX_UINT32 + 1, Number.NaN]) {
+      expect(() => mulberry32(seed)).toThrow(RangeError);
+    }
+  });
+});
+
+describe("percentile", () => {
+  it("uses documented linear interpolation and clamps the requested fraction", () => {
+    const sample = [10, 20, 30, 40];
+    expect(percentile(sample, 0.25)).toBe(17.5);
+    expect(percentile(sample, -1)).toBe(10);
+    expect(percentile(sample, 2)).toBe(40);
+  });
+});
+
+describe("simulation workload contract", () => {
+  it("accepts the documented maximum local workload without executing it", () => {
+    expect(
+      resolveSimulationOptions(
+        { scenarios: MAX_SCENARIO_COUNT, seed: MAX_UINT32 },
+        50,
+      ),
+    ).toEqual({ scenarioCount: MAX_SCENARIO_COUNT, seed: MAX_UINT32 });
+  });
+
+  it.each([
+    { scenarios: 0, seed: 0 },
+    { scenarios: 2.5, seed: 0 },
+    { scenarios: MAX_SCENARIO_COUNT + 1, seed: 0 },
+    { scenarios: 1, seed: -1 },
+    { scenarios: 1, seed: 1.5 },
+    { scenarios: 1, seed: MAX_UINT32 + 1 },
+  ])("rejects a noncanonical or excessive run config: %o", (options) => {
+    expect(() => resolveSimulationOptions(options, 20)).toThrow(RangeError);
+  });
 });
 
 describe("validation", () => {
@@ -182,6 +267,7 @@ describe("validation", () => {
     { field: "annualVolatility", value: 1.01 },
     { field: "annualReturn", value: -1 },
     { field: "annualReturn", value: -2 },
+    { field: "annualReturn", value: 1.01 },
     { field: "years", value: 0 },
     { field: "years", value: 51 },
     { field: "years", value: 2.5 },
@@ -194,5 +280,15 @@ describe("validation", () => {
     expect(() => runSimulation(BASE, { scenarios: 0 })).toThrow(RangeError);
     expect(() => runSimulation(BASE, { scenarios: 2.5 })).toThrow(RangeError);
     expect(() => runSimulation(BASE, { scenarios: 2, seed: Number.NaN })).toThrow(RangeError);
+  });
+
+  it.each([
+    { field: "startingBalance", value: 1_000_000_000_001 },
+    { field: "monthlyContribution", value: 100_000_001 },
+    { field: "targetEndingValue", value: 10_000_000_000_001 },
+  ] as const)("rejects an unsafe financial input boundary: $field", ({ field, value }) => {
+    expect(validateAssumptions({ ...BASE, [field]: value })).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field })]),
+    );
   });
 });

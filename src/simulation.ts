@@ -1,4 +1,14 @@
 export const UI_SCENARIO_COUNT = 5_000;
+export const MODEL_VERSION = "northstar-monte-carlo/2.0.0";
+export const MAX_SCENARIO_COUNT = 10_000;
+export const MAX_MONTHLY_UPDATES = 6_000_000;
+export const MAX_SNAPSHOT_CELLS = 510_000;
+export const MAX_UINT32 = 0xffff_ffff;
+
+const MAX_STARTING_BALANCE = 1_000_000_000_000;
+const MAX_MONTHLY_CONTRIBUTION = 100_000_000;
+const MAX_TARGET_ENDING_VALUE = 10_000_000_000_000;
+const MAX_MODELED_BALANCE = 1_000_000_000_000_000;
 
 export interface PortfolioAssumptions {
   startingBalance: number;
@@ -31,6 +41,7 @@ export interface SimulationResult {
   successProbability: number;
   scenarioCount: number;
   seed: number;
+  modelVersion: string;
 }
 
 export interface SimulationOptions {
@@ -48,7 +59,6 @@ const ASSUMPTION_FIELDS: readonly AssumptionField[] = [
 ];
 
 const DEFAULT_SEED = 0x4e4f5254;
-const MAX_BALANCE = Number.MAX_VALUE / 4;
 
 export class SimulationValidationError extends Error {
   readonly issues: ValidationIssue[];
@@ -57,6 +67,19 @@ export class SimulationValidationError extends Error {
     super(issues.map((issue) => issue.message).join(" "));
     this.name = "SimulationValidationError";
     this.issues = issues;
+  }
+}
+
+export class SimulationNumericalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SimulationNumericalError";
+  }
+}
+
+function assertUint32Seed(seed: number): void {
+  if (!Number.isSafeInteger(seed) || seed < 0 || seed > MAX_UINT32) {
+    throw new RangeError("Seed must be an unsigned 32-bit integer.");
   }
 }
 
@@ -77,29 +100,51 @@ export function validateAssumptions(input: PortfolioAssumptions): ValidationIssu
     return true;
   };
 
-  if (requireFinite("startingBalance", "Starting balance") && input.startingBalance < 0) {
-    issues.push({ field: "startingBalance", message: "Starting balance cannot be negative." });
+  if (requireFinite("startingBalance", "Starting balance")) {
+    if (input.startingBalance < 0) {
+      issues.push({ field: "startingBalance", message: "Starting balance cannot be negative." });
+    } else if (input.startingBalance > MAX_STARTING_BALANCE) {
+      issues.push({
+        field: "startingBalance",
+        message: "Starting balance must be $1 trillion or less.",
+      });
+    }
   }
 
-  if (
-    requireFinite("monthlyContribution", "Monthly contribution") &&
-    input.monthlyContribution < 0
-  ) {
-    issues.push({
-      field: "monthlyContribution",
-      message: "Monthly contribution cannot be negative.",
-    });
+  if (requireFinite("monthlyContribution", "Monthly contribution")) {
+    if (input.monthlyContribution < 0) {
+      issues.push({
+        field: "monthlyContribution",
+        message: "Monthly contribution cannot be negative.",
+      });
+    } else if (input.monthlyContribution > MAX_MONTHLY_CONTRIBUTION) {
+      issues.push({
+        field: "monthlyContribution",
+        message: "Monthly contribution must be $100 million or less.",
+      });
+    }
   }
 
-  if (requireFinite("targetEndingValue", "Target ending value") && input.targetEndingValue < 0) {
-    issues.push({
-      field: "targetEndingValue",
-      message: "Target ending value cannot be negative.",
-    });
+  if (requireFinite("targetEndingValue", "Target ending value")) {
+    if (input.targetEndingValue < 0) {
+      issues.push({
+        field: "targetEndingValue",
+        message: "Target ending value cannot be negative.",
+      });
+    } else if (input.targetEndingValue > MAX_TARGET_ENDING_VALUE) {
+      issues.push({
+        field: "targetEndingValue",
+        message: "Target ending value must be $10 trillion or less.",
+      });
+    }
   }
 
-  if (requireFinite("annualReturn", "Annual return") && input.annualReturn <= -1) {
-    issues.push({ field: "annualReturn", message: "Annual return must be greater than -100%." });
+  if (requireFinite("annualReturn", "Annual return")) {
+    if (input.annualReturn <= -1) {
+      issues.push({ field: "annualReturn", message: "Annual return must be greater than -100%." });
+    } else if (input.annualReturn > 1) {
+      issues.push({ field: "annualReturn", message: "Annual return must be 100% or less." });
+    }
   }
 
   if (requireFinite("annualVolatility", "Annual volatility")) {
@@ -125,6 +170,7 @@ export function validateAssumptions(input: PortfolioAssumptions): ValidationIssu
 
 /** A small deterministic pseudo-random generator with a 32-bit seed. */
 export function mulberry32(seed: number): () => number {
+  assertUint32Seed(seed);
   let state = seed >>> 0;
   return () => {
     state = (state + 0x6d2b79f5) | 0;
@@ -145,9 +191,26 @@ export function createNormalGenerator(random: () => number): () => number {
       return value;
     }
 
-    // Mulberry32 can return zero. Clamp u1 so log(u1) always remains finite.
-    const u1 = Math.max(random(), Number.EPSILON);
+    let zeroDraws = 0;
+    let u1 = random();
+    while (u1 === 0) {
+      zeroDraws += 1;
+      if (zeroDraws > 32) {
+        throw new RangeError("The random source returned zero too many consecutive times.");
+      }
+      u1 = random();
+    }
     const u2 = random();
+    if (
+      !Number.isFinite(u1) ||
+      !Number.isFinite(u2) ||
+      u1 < 0 ||
+      u1 >= 1 ||
+      u2 < 0 ||
+      u2 >= 1
+    ) {
+      throw new RangeError("The random source must return values from 0 inclusive to 1 exclusive.");
+    }
     const radius = Math.sqrt(-2 * Math.log(u1));
     const angle = 2 * Math.PI * u2;
     spare = radius * Math.sin(angle);
@@ -179,15 +242,48 @@ export function percentile(sortedValues: readonly number[], fraction: number): n
   return lower * (1 - weight) + upper * weight;
 }
 
-function capBalance(value: number): number {
-  if (!Number.isFinite(value) || value > MAX_BALANCE) {
-    return MAX_BALANCE;
+function checkedBalance(value: number, context: string): number {
+  if (!Number.isFinite(value) || value < 0 || value > MAX_MODELED_BALANCE) {
+    throw new SimulationNumericalError(
+      `The ${context} left Northstar's nonnegative $1 quadrillion numerical safety boundary.`,
+    );
   }
-  return Math.max(0, value);
+  return value;
 }
 
 function investedCapital(input: PortfolioAssumptions, year: number): number {
-  return capBalance(input.startingBalance + input.monthlyContribution * year * 12);
+  return checkedBalance(
+    input.startingBalance + input.monthlyContribution * year * 12,
+    "invested capital",
+  );
+}
+
+export function resolveSimulationOptions(
+  options: SimulationOptions,
+  years: number,
+): { scenarioCount: number; seed: number } {
+  const scenarioCount = options.scenarios ?? UI_SCENARIO_COUNT;
+  const seed = options.seed ?? DEFAULT_SEED;
+
+  if (
+    !Number.isSafeInteger(scenarioCount) ||
+    scenarioCount < 1 ||
+    scenarioCount > MAX_SCENARIO_COUNT
+  ) {
+    throw new RangeError(
+      `Scenario count must be a whole number from 1 through ${MAX_SCENARIO_COUNT.toLocaleString("en-US")}.`,
+    );
+  }
+
+  assertUint32Seed(seed);
+
+  const monthlyUpdates = scenarioCount * years * 12;
+  const snapshotCells = scenarioCount * (years + 1);
+  if (monthlyUpdates > MAX_MONTHLY_UPDATES || snapshotCells > MAX_SNAPSHOT_CELLS) {
+    throw new RangeError("The requested simulation exceeds Northstar's local workload limit.");
+  }
+
+  return { scenarioCount, seed };
 }
 
 export function runSimulation(
@@ -195,20 +291,12 @@ export function runSimulation(
   options: SimulationOptions = {},
 ): SimulationResult {
   const issues = validateAssumptions(input);
-  const scenarioCount = options.scenarios ?? UI_SCENARIO_COUNT;
-  const seed = options.seed ?? DEFAULT_SEED;
-
-  if (!Number.isInteger(scenarioCount) || scenarioCount < 1 || !Number.isFinite(scenarioCount)) {
-    throw new RangeError("Scenario count must be a positive whole number.");
-  }
-
-  if (!Number.isFinite(seed)) {
-    throw new RangeError("Seed must be finite.");
-  }
 
   if (issues.length > 0) {
     throw new SimulationValidationError(issues);
   }
+
+  const { scenarioCount, seed } = resolveSimulationOptions(options, input.years);
 
   const random = mulberry32(seed);
   const normal = createNormalGenerator(random);
@@ -227,7 +315,10 @@ export function runSimulation(
 
     for (let month = 1; month <= input.years * 12; month += 1) {
       const factor = Math.exp(monthlyDrift + monthlyDiffusion * normal());
-      balance = capBalance(balance * factor + input.monthlyContribution);
+      balance = checkedBalance(
+        balance * factor + input.monthlyContribution,
+        `balance in scenario ${scenario + 1}, month ${month}`,
+      );
 
       if (month % 12 === 0) {
         const annualSnapshot = snapshots[month / 12];
@@ -259,6 +350,7 @@ export function runSimulation(
     points,
     successProbability: successes / scenarioCount,
     scenarioCount,
-    seed: seed >>> 0,
+    seed,
+    modelVersion: MODEL_VERSION,
   };
 }
