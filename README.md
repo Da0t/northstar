@@ -10,6 +10,8 @@
 ![Tests: 37 passing](https://img.shields.io/badge/tests-37%20passing-2EA043)
 ![Runtime: local only](https://img.shields.io/badge/runtime-local%20only-0E6D52)
 
+![Northstar dashboard with editable Monte Carlo assumptions and an outcome fan chart](docs/images/northstar-dashboard.png)
+
 Northstar is intentionally a focused engineering case study, not a production financial-planning product. It makes the model, tradeoffs, correctness evidence, privacy boundary, and missing production work explicit.
 
 ## The 30-second product explanation
