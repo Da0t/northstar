@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FanChart, type DollarMode } from "./components/FanChart";
 import {
   formatCurrency,
@@ -9,12 +9,15 @@ import {
 import {
   UI_SCENARIO_COUNT,
   assumptionsEqual,
-  runSimulation,
   validateAssumptions,
   type AssumptionField,
   type PortfolioAssumptions,
   type SimulationResult,
 } from "./simulation";
+import {
+  SimulationCancelledError,
+  SimulationWorkerClient,
+} from "./simulationWorkerClient";
 
 const INITIAL_SEED = 0x4e4f5254;
 
@@ -38,6 +41,11 @@ const PRESETS = [
 
 type FormState = Record<AssumptionField, string>;
 type FormErrors = Partial<Record<AssumptionField, string>>;
+
+interface CompletedRun {
+  assumptions: PortfolioAssumptions;
+  result: SimulationResult;
+}
 
 interface FieldProps {
   field: AssumptionField;
@@ -205,41 +213,125 @@ function DecisionCard({
 
 export default function App() {
   const [form, setForm] = useState<FormState>(() => assumptionsToForm(DEFAULT_ASSUMPTIONS));
-  const [projection, setProjection] = useState<SimulationResult>(() =>
-    runSimulation(DEFAULT_ASSUMPTIONS, { scenarios: UI_SCENARIO_COUNT, seed: INITIAL_SEED }),
-  );
-  const [lastRun, setLastRun] = useState<PortfolioAssumptions>(DEFAULT_ASSUMPTIONS);
+  const [completedRun, setCompletedRun] = useState<CompletedRun | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [dollarMode, setDollarMode] = useState<DollarMode>("real");
-  const [statusMessage, setStatusMessage] = useState("Initial forecast ready.");
+  const [statusMessage, setStatusMessage] = useState("Preparing the initial forecast.");
   const [runError, setRunError] = useState<string | null>(null);
   const formRef = useRef(form);
-  const timerRef = useRef<number | undefined>(undefined);
+  const workerClientRef = useRef<SimulationWorkerClient | null>(null);
+  const jobTokenRef = useRef(0);
+  if (workerClientRef.current === null) {
+    workerClientRef.current = new SimulationWorkerClient();
+  }
   const parsed = useMemo(() => parseForm(form), [form]);
   const hasErrors = Object.keys(parsed.errors).length > 0;
-  const isStale = hasErrors || !assumptionsEqual(parsed.assumptions, lastRun);
-  const finalPoint = projection.points.at(-1);
+  const projection = completedRun?.result ?? null;
+  const lastRun = completedRun?.assumptions ?? null;
+  const isStale =
+    completedRun === null ||
+    hasErrors ||
+    !assumptionsEqual(parsed.assumptions, completedRun.assumptions);
+  const finalPoint = projection?.points.at(-1);
   const finalDistribution = finalPoint?.[dollarMode];
   const displayedGoal =
-    dollarMode === "real" ? lastRun.targetTodayValue : projection.targetNominal;
+    projection && lastRun
+      ? dollarMode === "real"
+        ? lastRun.targetTodayValue
+        : projection.targetNominal
+      : 0;
   const displayedInvested =
     dollarMode === "real" ? finalPoint?.investedReal : finalPoint?.investedNominal;
-  const planningThreshold = projection.planning.targetSuccessBps / 10_000;
+  const planningThreshold = projection
+    ? projection.planning.targetSuccessBps / 10_000
+    : 0;
   const isBoundaryHitSample =
-    projection.successfulScenarios === 0 ||
-    projection.successfulScenarios === projection.scenarioCount;
-  const samplingSummary = isBoundaryHitSample
-    ? `${projection.successfulScenarios.toLocaleString("en-US")} of ${projection.scenarioCount.toLocaleString("en-US")} paths shared the same goal outcome; interval not emphasized at this boundary`
-    : `${projection.successfulScenarios.toLocaleString("en-US")} of ${projection.scenarioCount.toLocaleString("en-US")} paths · ${formatProbability(projection.samplingInterval.confidenceLevel)} conditional sampling-error interval ${formatProbability(projection.samplingInterval.lower)}–${formatProbability(projection.samplingInterval.upper)}`;
+    projection !== null &&
+    (projection.successfulScenarios === 0 ||
+      projection.successfulScenarios === projection.scenarioCount);
+  const samplingSummary = !projection
+    ? ""
+    : isBoundaryHitSample
+      ? `${projection.successfulScenarios.toLocaleString("en-US")} of ${projection.scenarioCount.toLocaleString("en-US")} paths shared the same goal outcome; interval not emphasized at this boundary`
+      : `${projection.successfulScenarios.toLocaleString("en-US")} of ${projection.scenarioCount.toLocaleString("en-US")} paths · ${formatProbability(projection.samplingInterval.confidenceLevel)} conditional sampling-error interval ${formatProbability(projection.samplingInterval.lower)}–${formatProbability(projection.samplingInterval.upper)}`;
+  const forecastStatusLabel = isRunning
+    ? "Forecast running"
+    : projection === null
+      ? "No forecast yet"
+      : isStale
+        ? "Assumptions changed"
+        : "Forecast current";
+  const forecastStatusClass = isRunning
+    ? "status-running"
+    : isStale
+      ? "status-stale"
+      : "status-current";
 
-  useEffect(
-    () => () => {
-      if (timerRef.current !== undefined) {
-        window.clearTimeout(timerRef.current);
+  const executeForecast = useCallback(
+    async (
+      assumptions: PortfolioAssumptions,
+      seed: number,
+      initialRun = false,
+    ) => {
+      const client = workerClientRef.current;
+      if (!client) return;
+
+      const token = jobTokenRef.current + 1;
+      jobTokenRef.current = token;
+      setIsRunning(true);
+      setRunError(null);
+      setStatusMessage(
+        initialRun
+          ? `Building the initial ${UI_SCENARIO_COUNT.toLocaleString("en-US")}-path forecast…`
+          : `Running ${UI_SCENARIO_COUNT.toLocaleString("en-US")} local scenarios in a background worker…`,
+      );
+
+      try {
+        const result = await client.run(assumptions, {
+          scenarios: UI_SCENARIO_COUNT,
+          seed,
+        });
+        if (jobTokenRef.current !== token) return;
+
+        const latest = parseForm(formRef.current);
+        const latestHasErrors = Object.keys(latest.errors).length > 0;
+        const resultsAreCurrent =
+          !latestHasErrors && assumptionsEqual(latest.assumptions, assumptions);
+        setCompletedRun({ assumptions, result });
+        setStatusMessage(
+          resultsAreCurrent
+            ? `Forecast updated with ${UI_SCENARIO_COUNT.toLocaleString("en-US")} scenarios.`
+            : "Forecast finished, but current assumptions differ from this run. Run it again to refresh.",
+        );
+      } catch (error) {
+        if (jobTokenRef.current !== token) return;
+        if (error instanceof SimulationCancelledError) {
+          setStatusMessage("Forecast canceled. The last completed result was preserved.");
+          return;
+        }
+
+        const message =
+          error instanceof Error
+            ? error.message
+            : "The forecast could not be completed safely.";
+        setRunError(message);
+        setStatusMessage(`Forecast failed: ${message}`);
+      } finally {
+        if (jobTokenRef.current === token) {
+          setIsRunning(false);
+        }
       }
     },
     [],
   );
+
+  useEffect(() => {
+    void executeForecast(DEFAULT_ASSUMPTIONS, INITIAL_SEED, true);
+    return () => {
+      jobTokenRef.current += 1;
+      workerClientRef.current?.cancel("The simulation component was disposed.");
+    };
+  }, [executeForecast]);
 
   const updateForm = (nextForm: FormState, changedMessage: string, currentMessage: string) => {
     setRunError(null);
@@ -248,7 +340,7 @@ export default function App() {
     const next = parseForm(nextForm);
     const nextHasErrors = Object.keys(next.errors).length > 0;
     setStatusMessage(
-      nextHasErrors || !assumptionsEqual(next.assumptions, lastRun)
+      nextHasErrors || lastRun === null || !assumptionsEqual(next.assumptions, lastRun)
         ? changedMessage
         : currentMessage,
     );
@@ -289,39 +381,20 @@ export default function App() {
       return;
     }
 
-    setIsRunning(true);
-    setRunError(null);
-    setStatusMessage(`Running ${UI_SCENARIO_COUNT.toLocaleString("en-US")} local scenarios…`);
+    void executeForecast(current.assumptions, INITIAL_SEED);
+  };
 
-    timerRef.current = window.setTimeout(() => {
-      try {
-        const result = runSimulation(current.assumptions, {
-          scenarios: UI_SCENARIO_COUNT,
-          seed: INITIAL_SEED,
-        });
-        const latest = parseForm(formRef.current);
-        const latestHasErrors = Object.keys(latest.errors).length > 0;
-        const resultsAreCurrent =
-          !latestHasErrors && assumptionsEqual(latest.assumptions, current.assumptions);
-        setProjection(result);
-        setLastRun(current.assumptions);
-        setStatusMessage(
-          resultsAreCurrent
-            ? `Forecast updated with ${UI_SCENARIO_COUNT.toLocaleString("en-US")} scenarios.`
-            : "Forecast finished, but current assumptions differ from this run. Run it again to refresh.",
-        );
-      } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "The forecast could not be completed safely.";
-        setRunError(message);
-        setStatusMessage(`Forecast failed: ${message}`);
-      } finally {
-        setIsRunning(false);
-        timerRef.current = undefined;
-      }
-    }, 20);
+  const cancelForecast = () => {
+    jobTokenRef.current += 1;
+    if (workerClientRef.current?.cancel()) {
+      setIsRunning(false);
+      setRunError(null);
+      setStatusMessage(
+        completedRun
+          ? "Forecast canceled. The last completed result was preserved."
+          : "Initial forecast canceled. Run the forecast when you are ready.",
+      );
+    }
   };
 
   const selectedPreset = PRESETS.find(
@@ -547,17 +620,24 @@ export default function App() {
                 <p className="section-kicker">Modeled outcomes</p>
                 <h2 id="results-title">Your forecast</h2>
               </div>
-              <span className={`forecast-status ${isStale ? "status-stale" : "status-current"}`}>
-                <i aria-hidden="true" />
-                {isStale ? "Assumptions changed" : "Forecast current"}
-              </span>
+              <div className="results-actions">
+                <span className={`forecast-status ${forecastStatusClass}`}>
+                  <i aria-hidden="true" />
+                  {forecastStatusLabel}
+                </span>
+                {isRunning ? (
+                  <button type="button" className="cancel-button" onClick={cancelForecast}>
+                    Cancel run
+                  </button>
+                ) : null}
+              </div>
             </div>
 
             <p className="sr-only" aria-live="polite" aria-atomic="true">
               {statusMessage}
             </p>
 
-            {finalPoint && finalDistribution && displayedInvested !== undefined ? (
+            {projection && lastRun && finalPoint && finalDistribution && displayedInvested !== undefined ? (
               <>
                 <div className="metric-grid">
                   <MetricCard
@@ -690,7 +770,26 @@ export default function App() {
                   </div>
                 </article>
               </>
-            ) : null}
+            ) : (
+              <article className="results-placeholder">
+                <span className={isRunning ? "worker-spinner" : "worker-idle"} aria-hidden="true" />
+                <div>
+                  <p className="section-kicker">
+                    {isRunning ? "Background worker active" : "Ready when you are"}
+                  </p>
+                  <h3>
+                    {isRunning
+                      ? "Building the first reproducible path set…"
+                      : "No completed forecast yet."}
+                  </h3>
+                  <p>
+                    {isRunning
+                      ? "You can keep using the page while Northstar evaluates 5,000 monthly paths."
+                      : "Run the current assumptions to create a forecast."}
+                  </p>
+                </div>
+              </article>
+            )}
           </section>
         </div>
 

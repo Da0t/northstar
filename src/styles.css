@@ -523,6 +523,14 @@ main {
   padding: 2px 2px 12px;
 }
 
+.results-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .forecast-status {
   min-height: 34px;
   display: inline-flex;
@@ -558,6 +566,33 @@ main {
 
 .status-stale i {
   background: var(--amber);
+}
+
+.status-running {
+  border: 1px solid rgba(14, 109, 82, 0.2);
+  color: var(--emerald-dark);
+  background: #edf7f2;
+}
+
+.status-running i {
+  background: var(--emerald);
+  animation: status-pulse 1.1s ease-in-out infinite;
+}
+
+.cancel-button {
+  min-height: 34px;
+  padding: 7px 11px;
+  border: 1px solid #c7cec9;
+  border-radius: 999px;
+  color: #485750;
+  background: var(--paper);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.cancel-button:hover {
+  border-color: #8f9c95;
 }
 
 .results-stale .metric-card,
@@ -626,6 +661,74 @@ main {
   color: #59665f;
   font-size: 11px;
   line-height: 1.5;
+}
+
+.results-placeholder {
+  min-height: 360px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 40px;
+  border: 1px solid rgba(84, 101, 93, 0.16);
+  border-radius: 18px;
+  color: #59665f;
+  background: var(--paper);
+  box-shadow: var(--shadow);
+}
+
+.results-placeholder h3 {
+  margin: 7px 0 8px;
+  color: var(--ink);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.results-placeholder p:last-child {
+  max-width: 500px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.worker-spinner,
+.worker-idle {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.worker-spinner {
+  border: 3px solid var(--mint-light);
+  border-top-color: var(--emerald);
+  animation: worker-spin 800ms linear infinite;
+}
+
+.worker-idle {
+  border: 3px solid #d9dfda;
+  box-shadow: inset 0 0 0 8px var(--paper);
+  background: #aeb8b2;
+}
+
+@keyframes worker-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes status-pulse {
+  50% {
+    opacity: 0.38;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .worker-spinner,
+  .status-running i {
+    animation: none;
+  }
 }
 
 .decision-panel {

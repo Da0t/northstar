@@ -32,9 +32,10 @@ The application runs 5,000 monthly paths locally, reports nominal and today's-do
 | Financial correctness | A pure, typed engine; deterministic closed-form fixtures; fee and inflation tests; order-statistic solver proofs; conservative cent rounding. |
 | Reproducibility | A strict 32-bit seed, pinned PRNG vectors, recorded model version/scenario count, and a fixed path set for comparable reruns. |
 | Defensive computation | Input/workload ceilings, finite-value checks, a cent-precision balance boundary, and typed failures instead of overflow saturation. |
+| Responsive execution | A dedicated worker per run, request-ID isolation, hard cancellation by termination, and preservation of the last completed result. |
 | Model governance | Explicit units, conditional-interval language, drawdown definition, intended-use limits, and a versioned model identifier. |
 | User trust | Inline validation, stale-result state, preserved last valid output after failure, and visible educational disclaimers. |
-| Privacy | No application-originated runtime request, account, backend, persistence, secret, or financial-data upload. |
+| Privacy | No external API or data-egress request, account, backend, persistence, secret, or financial-data upload. Runtime fetches are limited to same-origin static assets, including the Worker chunk. |
 | Reviewability | Small dependency surface, custom semantic SVG, package-level gates, CI, and an architecture decision record. |
 
 ## Product scope
@@ -47,7 +48,7 @@ Northstar currently includes:
 - A 95% Wilson interval for finite-path Monte Carlo sampling error, explicitly conditional on the entered model assumptions.
 - Fixed-path contribution and supported-goal solvers with directionally safe cent rounding.
 - Average shortfall on misses, worst-decile mean, and net nominal return-index drawdown.
-- A real/nominal chart toggle, result freshness state, and in-memory-only execution.
+- A cancellable background Worker, real/nominal chart toggle, result freshness state, and in-memory-only execution.
 
 The application does not choose assumptions, recommend an allocation, or replace regulated financial advice.
 
@@ -76,7 +77,7 @@ pnpm build
 ```mermaid
 flowchart LR
     A[Form state] --> B[Parse and validate]
-    B -->|valid run| C[Bounded seeded simulation]
+    B -->|typed request| C[Dedicated simulation Worker]
     B -->|changed input| H[Mark prior result stale]
     C --> D[Annual nominal and real snapshots]
     C --> E[Pathwise planning coefficients]
@@ -84,10 +85,11 @@ flowchart LR
     E --> G[Threshold order statistics]
     F --> I[Decision cards and fan chart]
     G --> I
-    C -. in-memory browser state .-> J[No application runtime request]
+    C -. typed result or failure .-> I
+    C -. in-memory browser state .-> J[No external API or data egress]
 ```
 
-[`App.tsx`](src/App.tsx) owns form parsing, execution state, and freshness. [`simulation.ts`](src/simulation.ts) owns the model and its safety contract. [`planningMetrics.ts`](src/planningMetrics.ts) contains independent order-statistic, interval, tail, and cent-rounding functions. [`FanChart.tsx`](src/components/FanChart.tsx) renders derived output without a charting dependency.
+[`App.tsx`](src/App.tsx) owns form parsing, execution state, cancellation, and freshness. [`simulationWorkerClient.ts`](src/simulationWorkerClient.ts) owns one Worker per run and rejects stale or malformed responses. [`simulation.ts`](src/simulation.ts) owns the model and its safety contract. [`planningMetrics.ts`](src/planningMetrics.ts) contains independent order-statistic, interval, tail, and cent-rounding functions. [`FanChart.tsx`](src/components/FanChart.tsx) renders derived output without a charting dependency.
 
 The local-first boundary and revisit criteria are recorded in [ADR 0001](docs/adr/0001-local-first-simulation.md).
 
@@ -143,7 +145,7 @@ Drawdown is the maximum peak-to-trough decline of each path's **nominal growth i
 - Scenario count is capped at 10,000, monthly work at 6,000,000 updates, and stored annual snapshots at 510,000 cells.
 - Financial inputs have explicit ceilings; years are limited to 1–50.
 - Modeled balances must remain finite, nonnegative, and below `Number.MAX_SAFE_INTEGER / 100`, preserving safe cent-scale integers.
-- Numerical violations throw a typed error and preserve the previous valid UI result. They never become apparent wealth through silent saturation.
+- Numerical violations cross the Worker boundary as clone-safe typed failures and preserve the previous valid UI result. They never become apparent wealth through silent saturation.
 
 Continuous balances intentionally use JavaScript numbers because this is a stochastic planning model, not a ledger. Actionable cent outputs receive conservative directional rounding and have dedicated binary-edge fixtures.
 
@@ -159,12 +161,13 @@ The test suite covers:
 - exact path-count thresholds, contribution/goal boundary proofs, tail metrics, and Wilson fixtures;
 - safe-cent rounding at binary floating-point edges and the maximum supported boundary;
 - workload, seed, financial-input, overflow, and combined goal/inflation limits.
+- worker request round trips, clone-safe error serialization, stale-response isolation, explicit cancellation, and worker failure cleanup.
 
 The [CI workflow](.github/workflows/ci.yml) runs lint, tests, type checking, and a production build on pushes and pull requests. There is not yet a coverage threshold or browser end-to-end job.
 
 ## Privacy and accessibility boundary
 
-Northstar application code makes no network request at runtime. Entered assumptions and generated outcomes exist only in browser memory and disappear on reload. The browser profile, extensions, development tooling, package installation, source-control hosting, and host device are outside that claim; local execution is a data-flow property, not a security guarantee.
+Northstar makes no external API or data-egress request at runtime. It loads same-origin static application assets, including a separate Worker chunk. Entered assumptions and generated outcomes exist only in browser memory and disappear on reload. The browser profile, extensions, development tooling, package installation, source-control hosting, static-asset host, and host device are outside that claim; local execution is a data-flow property, not a security guarantee.
 
 Accessibility foundations include native controls, associated labels and units, inline error descriptions, pressed/busy state, live status, visible focus, responsive layout, and an SVG title/description. The project does not claim WCAG conformance: automated accessibility testing, a screen-reader audit, a zoom/reflow record, and an exact annual data table remain open work.
 
@@ -181,14 +184,14 @@ Accessibility foundations include native controls, associated labels and units, 
 
 ### System and product
 
-- Simulation currently runs synchronously on the browser main thread; the scheduled callback lets status render but cannot provide true in-flight cancellation.
+- Each run uses one dedicated Worker and hard cancellation terminates it; there is not yet progress reporting, a worker pool, or measured performance budget.
 - There is no persistence, account, backend, export, collaboration, or durable audit history.
 - There are no automated end-to-end, accessibility, visual-regression, compatibility, or performance-budget checks yet.
 - The prototype is not calibrated or validated for production planning, regulated use, or a measured service-level target.
 
 ## Roadmap
 
-1. Move simulation into a cancellable Web Worker and expose seed/run metadata.
+1. Expose seed and run metadata, then add deterministic resampling controls.
 2. Add an accessible annual data table, browser interaction tests, and measured performance budgets.
 3. Add selectable bootstrap or fat-tailed/regime models and multi-asset correlations.
 4. Add sensitivity analysis that separates assumption risk from finite-path sampling noise.
@@ -198,9 +201,11 @@ Accessibility foundations include native controls, associated labels and units, 
 
 | Path | Responsibility |
 | --- | --- |
-| [`src/App.tsx`](src/App.tsx) | Form parsing, validation presentation, fixed-seed orchestration, failure handling, and result freshness. |
+| [`src/App.tsx`](src/App.tsx) | Form parsing, validation presentation, worker orchestration, cancellation, failure handling, and result freshness. |
 | [`src/simulation.ts`](src/simulation.ts) | Typed assumptions, validation, bounded PRNG simulation, planning coefficients, snapshots, and versioned results. |
 | [`src/planningMetrics.ts`](src/planningMetrics.ts) | Order statistics, Wilson interval, tail metrics, shortfall, and directional cent rounding. |
+| [`src/simulationWorkerProtocol.ts`](src/simulationWorkerProtocol.ts) | Typed clone-safe run/result/failure protocol and pure request executor. |
+| [`src/simulationWorkerClient.ts`](src/simulationWorkerClient.ts) | Per-run Worker lifecycle, request IDs, cancellation, and remote error reconstruction. |
 | [`src/components/FanChart.tsx`](src/components/FanChart.tsx) | Semantic SVG percentile bands, reference lines, labels, title, and description. |
 | [`src/format.ts`](src/format.ts) | Whole, compact, and exact-cent financial presentation. |
 | [`src/*.test.ts`](src) | Deterministic finance, safety, solver, and formatting verification. |
