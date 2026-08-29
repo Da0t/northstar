@@ -33,7 +33,7 @@ const DEFAULT_ASSUMPTIONS: PortfolioAssumptions = {
   annualVolatility: 0.15,
   annualInflation: 0.025,
   annualFee: 0.0025,
-  targetTodayValue: 500_000,
+  targetTodayValue: 250_000,
   targetSuccessBps: 8_000,
 };
 
@@ -460,7 +460,7 @@ export default function App() {
             <p className="brand-subtitle">Goal Resilience Lab</p>
           </div>
         </div>
-        <p className="header-descriptor">See the range, not just the average.</p>
+        <p className="header-descriptor">Compare the range, not just the average.</p>
         <div className="disclosure-pill">
           <span aria-hidden="true" />
           5,000 scenarios <b>•</b> Local only
@@ -469,11 +469,11 @@ export default function App() {
 
       <main id="main-content">
         <section className="intro" aria-labelledby="page-title">
-          <p className="eyebrow">Long-range planning, made tangible</p>
-          <h1 id="page-title">Explore where your portfolio could go.</h1>
+          <p className="eyebrow">Local-first goal resilience</p>
+          <h1 id="page-title">Pressure-test your portfolio goal.</h1>
           <p>
-            Test a set of assumptions against thousands of possible market paths. Northstar keeps
-            the math on your device and puts uncertainty front and center.
+            Explore fees, inflation, and funding trade-offs across 5,000 reproducible market
+            paths—without sending your financial inputs off-device.
           </p>
         </section>
 
@@ -722,7 +722,7 @@ export default function App() {
               <>
                 <div className="metric-grid">
                   <MetricCard
-                    label="Simulated goal-hit rate"
+                    label="Conditional goal-hit rate"
                     value={formatProbability(projection.successProbability)}
                     note={samplingSummary}
                     accent
@@ -774,7 +774,7 @@ export default function App() {
                     <div>
                       <p className="section-kicker">Modeled funding trade-offs</p>
                       <h3 id="decision-title">
-                        Alternatives at a {formatProbability(planningThreshold)}
+                        Trade-offs at the {formatProbability(planningThreshold)}
                         {" "}modeled path threshold
                       </h3>
                     </div>
