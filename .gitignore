@@ -1,0 +1,32 @@
+# Dependencies and package-manager state
+node_modules/
+.pnpm-store/
+
+# Generated output and reports
+dist/
+coverage/
+*.tsbuildinfo
+
+# Tool caches
+.vite/
+
+# Environment and local overrides
+.env
+.env.*
+!.env.example
+*.local
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Operating systems and editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
