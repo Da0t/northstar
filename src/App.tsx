@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FanChart, type DollarMode } from "./components/FanChart";
+import { AnnualResultsTable } from "./components/AnnualResultsTable";
 import {
   formatCurrency,
   formatExactCurrency,
@@ -448,12 +449,15 @@ export default function App() {
 
   return (
     <div className="app-frame">
+      <a className="skip-link" href="#main-content">
+        Skip to forecast workspace
+      </a>
       <header className="site-header">
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden="true">N</span>
           <div>
             <p className="wordmark">Northstar</p>
-            <p className="brand-subtitle">Portfolio Forecast</p>
+            <p className="brand-subtitle">Goal Resilience Lab</p>
           </div>
         </div>
         <p className="header-descriptor">See the range, not just the average.</p>
@@ -463,7 +467,7 @@ export default function App() {
         </div>
       </header>
 
-      <main>
+      <main id="main-content">
         <section className="intro" aria-labelledby="page-title">
           <p className="eyebrow">Long-range planning, made tangible</p>
           <h1 id="page-title">Explore where your portfolio could go.</h1>
@@ -845,6 +849,10 @@ export default function App() {
                     target={displayedGoal}
                     mode={dollarMode}
                   />
+                  <details className="annual-results-details">
+                    <summary>View exact annual forecast data</summary>
+                    <AnnualResultsTable points={projection.points} mode={dollarMode} />
+                  </details>
                 </article>
 
                 <article className="summary-card">

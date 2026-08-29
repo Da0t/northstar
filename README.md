@@ -48,6 +48,7 @@ Northstar currently includes:
 - A 95% Wilson interval for finite-path Monte Carlo sampling error, explicitly conditional on the entered model assumptions.
 - Fixed-path contribution and supported-goal solvers with directionally safe cent rounding.
 - Average shortfall on misses, worst-decile mean, and net nominal return-index drawdown.
+- A native annual data table with exact values behind the visual fan chart.
 - A cancellable background Worker, visible seed/model/run metadata, explicit next-sample control, result freshness state, and in-memory-only execution.
 
 The application does not choose assumptions, recommend an allocation, or replace regulated financial advice.
@@ -169,7 +170,7 @@ The [CI workflow](.github/workflows/ci.yml) runs lint, tests, type checking, and
 
 Northstar makes no external API or data-egress request at runtime. It loads same-origin static application assets, including a separate Worker chunk. Entered assumptions and generated outcomes exist only in browser memory and disappear on reload. The browser profile, extensions, development tooling, package installation, source-control hosting, static-asset host, and host device are outside that claim; local execution is a data-flow property, not a security guarantee.
 
-Accessibility foundations include native controls, associated labels and units, inline error descriptions, pressed/busy state, live status, visible focus, responsive layout, and an SVG title/description. The project does not claim WCAG conformance: automated accessibility testing, a screen-reader audit, a zoom/reflow record, and an exact annual data table remain open work.
+Accessibility foundations include a skip link, native controls, associated labels and units, inline error descriptions, pressed/busy state, live status, high-contrast focus, reduced-motion handling, responsive layout, an SVG title/description, and a native table containing the exact annual chart values. The project does not claim WCAG conformance: automated accessibility testing, a screen-reader audit, and a formal zoom/reflow record remain open work.
 
 ## Known limitations
 
@@ -191,7 +192,7 @@ Accessibility foundations include native controls, associated labels and units, 
 
 ## Roadmap
 
-1. Add an accessible annual data table, browser interaction tests, and measured performance budgets.
+1. Add browser interaction/accessibility automation and measured performance budgets.
 2. Add selectable bootstrap or fat-tailed/regime models and multi-asset correlations.
 3. Add sensitivity analysis that separates assumption risk from finite-path sampling noise.
 4. Define retention requirements before considering export or account-backed plans.
@@ -207,6 +208,7 @@ Accessibility foundations include native controls, associated labels and units, 
 | [`src/simulationWorkerClient.ts`](src/simulationWorkerClient.ts) | Per-run Worker lifecycle, request IDs, cancellation, and remote error reconstruction. |
 | [`src/runConfig.ts`](src/runConfig.ts) | Strict decimal uint32 seed parsing, reproducible default, and explicit wraparound advancement. |
 | [`src/components/FanChart.tsx`](src/components/FanChart.tsx) | Semantic SVG percentile bands, reference lines, labels, title, and description. |
+| [`src/components/AnnualResultsTable.tsx`](src/components/AnnualResultsTable.tsx) | Exact native-table fallback for every annual percentile and invested-capital value. |
 | [`src/format.ts`](src/format.ts) | Whole, compact, and exact-cent financial presentation. |
 | [`src/*.test.ts`](src) | Deterministic finance, safety, solver, and formatting verification. |
 | [`docs/adr/0001-local-first-simulation.md`](docs/adr/0001-local-first-simulation.md) | Local execution decision and revisit criteria. |
