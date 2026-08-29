@@ -467,7 +467,7 @@ export default function App() {
         </div>
       </header>
 
-      <main id="main-content">
+      <main id="main-content" tabIndex={-1}>
         <section className="intro" aria-labelledby="page-title">
           <p className="eyebrow">Local-first goal resilience</p>
           <h1 id="page-title">Pressure-test your portfolio goal.</h1>
