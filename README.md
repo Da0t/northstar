@@ -92,7 +92,13 @@ flowchart LR
 
 [`App.tsx`](src/App.tsx) owns form parsing, execution state, cancellation, and freshness. [`simulationWorkerClient.ts`](src/simulationWorkerClient.ts) owns one Worker per run and rejects stale or malformed responses. [`simulation.ts`](src/simulation.ts) owns the model and its safety contract. [`planningMetrics.ts`](src/planningMetrics.ts) contains independent order-statistic, interval, tail, and cent-rounding functions. [`FanChart.tsx`](src/components/FanChart.tsx) renders derived output without a charting dependency.
 
-The local-first boundary and revisit criteria are recorded in [ADR 0001](docs/adr/0001-local-first-simulation.md).
+The local-first boundary and revisit criteria are recorded in [ADR 0001](docs/adr/0001-local-first-simulation.md). The common-random-number comparison policy is recorded in [ADR 0002](docs/adr/0002-fixed-path-planning-comparisons.md).
+
+## Model governance
+
+- The [model card](docs/model-card.md) defines intended use, prohibited interpretations, inputs, equations, outputs, numerical behavior, limitations, verification, and versioning policy.
+- The [threat model](docs/threat-model.md) scopes sensitive financial inputs, same-origin Worker execution, external dependencies, residual risks, and the controls required before persistence or accounts.
+- [ADR 0002](docs/adr/0002-fixed-path-planning-comparisons.md) explains why assumption comparisons reuse a visible seeded path set and why resampling is explicit.
 
 ## Model
 
@@ -212,6 +218,9 @@ Accessibility foundations include a skip link, native controls, associated label
 | [`src/format.ts`](src/format.ts) | Whole, compact, and exact-cent financial presentation. |
 | [`src/*.test.ts`](src) | Deterministic finance, safety, solver, and formatting verification. |
 | [`docs/adr/0001-local-first-simulation.md`](docs/adr/0001-local-first-simulation.md) | Local execution decision and revisit criteria. |
+| [`docs/adr/0002-fixed-path-planning-comparisons.md`](docs/adr/0002-fixed-path-planning-comparisons.md) | Common path-set comparison and explicit resampling decision. |
+| [`docs/model-card.md`](docs/model-card.md) | Versioned model purpose, mechanics, limits, evidence, and change policy. |
+| [`docs/threat-model.md`](docs/threat-model.md) | Local data-flow boundary, residual risks, and scope-expansion triggers. |
 | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | Frozen-install quality gates on pushes and pull requests. |
 
 ## Disclaimer
