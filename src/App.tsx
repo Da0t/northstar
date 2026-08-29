@@ -18,8 +18,11 @@ import {
   SimulationCancelledError,
   SimulationWorkerClient,
 } from "./simulationWorkerClient";
-
-const INITIAL_SEED = 0x4e4f5254;
+import {
+  DEFAULT_SIMULATION_SEED,
+  nextSeed,
+  parseSeedInput,
+} from "./runConfig";
 
 const DEFAULT_ASSUMPTIONS: PortfolioAssumptions = {
   startingBalance: 25_000,
@@ -213,25 +216,29 @@ function DecisionCard({
 
 export default function App() {
   const [form, setForm] = useState<FormState>(() => assumptionsToForm(DEFAULT_ASSUMPTIONS));
+  const [seedInput, setSeedInput] = useState(String(DEFAULT_SIMULATION_SEED));
   const [completedRun, setCompletedRun] = useState<CompletedRun | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [dollarMode, setDollarMode] = useState<DollarMode>("real");
   const [statusMessage, setStatusMessage] = useState("Preparing the initial forecast.");
   const [runError, setRunError] = useState<string | null>(null);
   const formRef = useRef(form);
+  const seedInputRef = useRef(seedInput);
   const workerClientRef = useRef<SimulationWorkerClient | null>(null);
   const jobTokenRef = useRef(0);
   if (workerClientRef.current === null) {
     workerClientRef.current = new SimulationWorkerClient();
   }
   const parsed = useMemo(() => parseForm(form), [form]);
-  const hasErrors = Object.keys(parsed.errors).length > 0;
+  const parsedSeed = useMemo(() => parseSeedInput(seedInput), [seedInput]);
+  const hasErrors = Object.keys(parsed.errors).length > 0 || !parsedSeed.ok;
   const projection = completedRun?.result ?? null;
   const lastRun = completedRun?.assumptions ?? null;
   const isStale =
     completedRun === null ||
     hasErrors ||
-    !assumptionsEqual(parsed.assumptions, completedRun.assumptions);
+    !assumptionsEqual(parsed.assumptions, completedRun.assumptions) ||
+    (parsedSeed.ok && parsedSeed.value !== completedRun.result.seed);
   const finalPoint = projection?.points.at(-1);
   const finalDistribution = finalPoint?.[dollarMode];
   const displayedGoal =
@@ -294,9 +301,13 @@ export default function App() {
         if (jobTokenRef.current !== token) return;
 
         const latest = parseForm(formRef.current);
+        const latestSeed = parseSeedInput(seedInputRef.current);
         const latestHasErrors = Object.keys(latest.errors).length > 0;
         const resultsAreCurrent =
-          !latestHasErrors && assumptionsEqual(latest.assumptions, assumptions);
+          !latestHasErrors &&
+          latestSeed.ok &&
+          latestSeed.value === seed &&
+          assumptionsEqual(latest.assumptions, assumptions);
         setCompletedRun({ assumptions, result });
         setStatusMessage(
           resultsAreCurrent
@@ -326,7 +337,7 @@ export default function App() {
   );
 
   useEffect(() => {
-    void executeForecast(DEFAULT_ASSUMPTIONS, INITIAL_SEED, true);
+    void executeForecast(DEFAULT_ASSUMPTIONS, DEFAULT_SIMULATION_SEED, true);
     return () => {
       jobTokenRef.current += 1;
       workerClientRef.current?.cancel("The simulation component was disposed.");
@@ -340,7 +351,12 @@ export default function App() {
     const next = parseForm(nextForm);
     const nextHasErrors = Object.keys(next.errors).length > 0;
     setStatusMessage(
-      nextHasErrors || lastRun === null || !assumptionsEqual(next.assumptions, lastRun)
+      nextHasErrors ||
+      !parsedSeed.ok ||
+      projection === null ||
+      parsedSeed.value !== projection.seed ||
+      lastRun === null ||
+      !assumptionsEqual(next.assumptions, lastRun)
         ? changedMessage
         : currentMessage,
     );
@@ -374,6 +390,27 @@ export default function App() {
     );
   };
 
+  const updateSeed = (value: string) => {
+    seedInputRef.current = value;
+    setSeedInput(value);
+    setRunError(null);
+    const next = parseSeedInput(value);
+    const assumptionsAreCurrent =
+      lastRun !== null && assumptionsEqual(parsed.assumptions, lastRun);
+    setStatusMessage(
+      next.ok && projection && next.value === projection.seed && assumptionsAreCurrent
+        ? "Seed and assumptions match the displayed forecast."
+        : "Run configuration changed. Run the forecast to refresh results.",
+    );
+  };
+
+  const useNextSeed = () => {
+    const baseSeed = parsedSeed.ok
+      ? parsedSeed.value
+      : projection?.seed ?? DEFAULT_SIMULATION_SEED;
+    updateSeed(String(nextSeed(baseSeed)));
+  };
+
   const runForecast = () => {
     const current = parseForm(formRef.current);
     if (Object.keys(current.errors).length > 0) {
@@ -381,7 +418,13 @@ export default function App() {
       return;
     }
 
-    void executeForecast(current.assumptions, INITIAL_SEED);
+    const currentSeed = parseSeedInput(seedInputRef.current);
+    if (!currentSeed.ok) {
+      setStatusMessage("Enter a valid unsigned 32-bit decimal seed before running the forecast.");
+      return;
+    }
+
+    void executeForecast(current.assumptions, currentSeed.value);
   };
 
   const cancelForecast = () => {
@@ -585,6 +628,40 @@ export default function App() {
                 inflation converts future balances back into today's purchasing power.
               </p>
 
+              <div className="run-config-panel">
+                <div className={`field ${parsedSeed.ok ? "" : "field-invalid"}`}>
+                  <label htmlFor="simulation-seed">Path-set seed (uint32)</label>
+                  <div className="input-shell">
+                    <input
+                      id="simulation-seed"
+                      name="simulationSeed"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      value={seedInput}
+                      aria-invalid={!parsedSeed.ok}
+                      aria-describedby={
+                        parsedSeed.ok
+                          ? "simulation-seed-help"
+                          : "simulation-seed-help simulation-seed-error"
+                      }
+                      onChange={(event) => updateSeed(event.target.value)}
+                    />
+                  </div>
+                  <span className="field-help" id="simulation-seed-help">
+                    Reuse this value for the same modeled paths. A new seed changes only the sample.
+                  </span>
+                  {!parsedSeed.ok ? (
+                    <span className="field-error" id="simulation-seed-error" role="alert">
+                      {parsedSeed.error}
+                    </span>
+                  ) : null}
+                </div>
+                <button type="button" className="next-seed-button" onClick={useNextSeed}>
+                  Use next seed
+                </button>
+              </div>
+
               <button
                 className="run-button"
                 type="submit"
@@ -668,6 +745,25 @@ export default function App() {
                   noise under these fixed model assumptions. It does not measure model,
                   assumption, or real-world uncertainty.
                 </p>
+
+                <dl className="run-metadata" aria-label="Executed forecast metadata">
+                  <div>
+                    <dt>Model version</dt>
+                    <dd>{projection.modelVersion}</dd>
+                  </div>
+                  <div>
+                    <dt>Path-set seed</dt>
+                    <dd>{projection.seed.toLocaleString("en-US")}</dd>
+                  </div>
+                  <div>
+                    <dt>Scenario paths</dt>
+                    <dd>{projection.scenarioCount.toLocaleString("en-US")}</dd>
+                  </div>
+                  <div>
+                    <dt>Execution</dt>
+                    <dd>Dedicated Web Worker</dd>
+                  </div>
+                </dl>
 
                 <section className="decision-panel" aria-labelledby="decision-title">
                   <div className="decision-heading">

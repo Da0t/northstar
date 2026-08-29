@@ -48,7 +48,7 @@ Northstar currently includes:
 - A 95% Wilson interval for finite-path Monte Carlo sampling error, explicitly conditional on the entered model assumptions.
 - Fixed-path contribution and supported-goal solvers with directionally safe cent rounding.
 - Average shortfall on misses, worst-decile mean, and net nominal return-index drawdown.
-- A cancellable background Worker, real/nominal chart toggle, result freshness state, and in-memory-only execution.
+- A cancellable background Worker, visible seed/model/run metadata, explicit next-sample control, result freshness state, and in-memory-only execution.
 
 The application does not choose assumptions, recommend an allocation, or replace regulated financial advice.
 
@@ -141,7 +141,7 @@ Drawdown is the maximum peak-to-trough decline of each path's **nominal growth i
 
 - The model identifier is versioned in source and included in every result.
 - Mulberry32 provides a deterministic 32-bit random stream; Box–Muller converts it to standard-normal shocks.
-- Normal UI reruns reuse one fixed seed so an assumption change is not confounded with sampling jitter.
+- Normal UI reruns reuse the visible seed so an assumption change is not confounded with sampling jitter. “Use next seed” changes the sample explicitly and never runs silently.
 - Scenario count is capped at 10,000, monthly work at 6,000,000 updates, and stored annual snapshots at 510,000 cells.
 - Financial inputs have explicit ceilings; years are limited to 1–50.
 - Modeled balances must remain finite, nonnegative, and below `Number.MAX_SAFE_INTEGER / 100`, preserving safe cent-scale integers.
@@ -191,11 +191,10 @@ Accessibility foundations include native controls, associated labels and units, 
 
 ## Roadmap
 
-1. Expose seed and run metadata, then add deterministic resampling controls.
-2. Add an accessible annual data table, browser interaction tests, and measured performance budgets.
-3. Add selectable bootstrap or fat-tailed/regime models and multi-asset correlations.
-4. Add sensitivity analysis that separates assumption risk from finite-path sampling noise.
-5. Define retention and threat models before considering export or account-backed plans.
+1. Add an accessible annual data table, browser interaction tests, and measured performance budgets.
+2. Add selectable bootstrap or fat-tailed/regime models and multi-asset correlations.
+3. Add sensitivity analysis that separates assumption risk from finite-path sampling noise.
+4. Define retention requirements before considering export or account-backed plans.
 
 ## Code map
 
@@ -206,6 +205,7 @@ Accessibility foundations include native controls, associated labels and units, 
 | [`src/planningMetrics.ts`](src/planningMetrics.ts) | Order statistics, Wilson interval, tail metrics, shortfall, and directional cent rounding. |
 | [`src/simulationWorkerProtocol.ts`](src/simulationWorkerProtocol.ts) | Typed clone-safe run/result/failure protocol and pure request executor. |
 | [`src/simulationWorkerClient.ts`](src/simulationWorkerClient.ts) | Per-run Worker lifecycle, request IDs, cancellation, and remote error reconstruction. |
+| [`src/runConfig.ts`](src/runConfig.ts) | Strict decimal uint32 seed parsing, reproducible default, and explicit wraparound advancement. |
 | [`src/components/FanChart.tsx`](src/components/FanChart.tsx) | Semantic SVG percentile bands, reference lines, labels, title, and description. |
 | [`src/format.ts`](src/format.ts) | Whole, compact, and exact-cent financial presentation. |
 | [`src/*.test.ts`](src) | Deterministic finance, safety, solver, and formatting verification. |
